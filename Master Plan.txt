@@ -1,0 +1,232 @@
+================================================================================
+                      TWITCH IMP ADVENTURE - MASTER PLAN
+================================================================================
+
+Last Updated: 2026-03-10
+
+================================================================================
+CONCEPT
+================================================================================
+
+An interactive Twitch chat game where stream viewers play as "imps" serving
+their master (the streamer/lord). Imps go on auto-battler adventures, collect
+loot, level up, and bring rewards back to the keep. The game runs during stream
+downtime, encouraging viewer engagement without demanding constant attention.
+
+Viewers interact via:
+  - Twitch chat commands (!join, !vote, !stats)
+  - Web interface (viewer mode for detailed management)
+  - Both feed into the same game state
+
+The streamer controls the game via:
+  - Admin web dashboard
+  - Stream Deck webhooks
+  - Chat commands (future)
+
+================================================================================
+TECH STACK
+================================================================================
+
+  TypeScript full-stack monorepo (pnpm workspaces + Turborepo)
+
+  Backend:   Node.js + Express
+  Frontend:  React (Vite) - responsive mobile/desktop
+  Database:  SQLite (better-sqlite3 + Drizzle ORM)
+  Real-time: Socket.IO (WebSockets)
+  Twitch:    tmi.js (chat bot) + Twitch OAuth (SSO)
+  Rendering: PixiJS (combat grid)
+  State:     Zustand (client)
+  Hosting:   Self-hosted VPS
+
+================================================================================
+GAME OVERVIEW
+================================================================================
+
+Two main phases: KEEP PHASE and ADVENTURE PHASE.
+
+--- KEEP PHASE ---
+
+Imps are at home. Players can:
+  - Customize their imp (name, color, horns, eyes, mouth, nose, extras, cosmetics)
+  - Change their weapon at the armory (determines combat behavior)
+  - Spend gold on cosmetics
+  - Spend skill points on passive skills
+  - View other imps
+
+The streamer (lord/GM) can:
+  - Spend building materials to upgrade the keep
+  - Trigger adventure start (manual or auto after ~10 min idle)
+  - Gift cosmetics to players
+  - Manage game state via admin dashboard
+
+--- ADVENTURE PHASE ---
+
+1. VOTE: Players vote on 1 of 3 locations (or stay at keep). 1 minute, majority wins.
+2. TRAVEL: Imps march as a horde to the destination.
+3. FIVE-STEP JOURNEY:
+   - Combat 1 -> Event 1 -> Combat 2 -> Event 2 -> Boss Fight
+4. POST-BOSS: Vote to continue (push your luck) or return home with loot.
+
+If continuing:
+  - Pick a new area, do another 5-step journey
+  - Reward tier/quantity increases
+  - But fewer imps remain (attrition from combat)
+
+If returning:
+  - Surviving imps bring back rewards
+  - Materials + 95% gold go to keep treasury
+  - 5% gold split among surviving imps
+  - Area completion treasure earned for the keep
+
+================================================================================
+COMBAT SYSTEM
+================================================================================
+
+Grid-based (5x5 to 8x8) turn-based auto-battler.
+
+  - Pure AI: players don't control combat, they watch
+  - Up to 5 imps selected per combat (biased toward those who fought less)
+  - Turn order based on speed stat
+  - Each weapon defines its own AI behavior (range, targeting, attack style)
+  - If an imp hits 0 HP: ejected from adventure, replacement joins
+  - If ALL imps defeated: adventure fails, everyone returns to keep
+  - Boss fights: special enemies, typically harder
+  - Server simulates combat synchronously, sends action sequence to clients
+  - Clients replay with timed delays for animation
+
+Weapons (5 base, more unlockable):
+  Sword  - melee, balanced attack
+  Bow    - ranged, targets from distance
+  Staff  - ranged, magical attacks
+  Cross  - targets lowest-HP ally (healing)
+  Shield - melee, tanky, absorbs damage
+
+No "class" system - weapons directly define all combat behavior.
+
+================================================================================
+EVENTS
+================================================================================
+
+During events, all remaining imps vote on a choice:
+  - Luck-based: random outcome with success/failure chances
+  - Skill-check: outcome influenced by group composition
+    (e.g., more sword-wielders = better chance to break down a door)
+  - Can produce gold, materials, healing, damage, or special effects
+
+================================================================================
+REWARDS & ECONOMY
+================================================================================
+
+Adventure Rewards:
+  - Gold, materials, and special items collected per step
+  - On return: materials -> keep, 95% gold -> keep treasury, 5% gold -> surviving imps
+  - High gold values from adventures so 5% is still meaningful
+
+Area Completion Rewards (Keep Treasures):
+  - Completing an area + returning earns a unique permanent keep treasure
+  - Types: passive bonuses, new weapon unlocks, cosmetic trophies
+  - Continuing past boss fight = higher tier rewards
+  - Weapon unlocks are globally available to ALL players
+
+Gold Economy:
+  - Gold held by each imp individually
+  - Spent on: cosmetic items, skill resets
+  - Cosmetics priced lower to match the 5% income
+
+================================================================================
+PLAYER PROGRESSION
+================================================================================
+
+Experience:
+  - 1 XP per adventure step participated
+  - +1 XP per enemy killed in combat
+  - +3 XP for surviving a boss fight
+  - XP maintained even if knocked out of adventure
+
+Leveling:
+  - XP threshold -> level up -> earn skill point
+  - Skill points spent to learn passive skills
+  - Save points for higher-cost skills
+  - Gold to reset skill points
+
+Skill Slots (based on Twitch engagement):
+  - Viewer:  1 slot
+  - Follower: 2 slots
+  - Paid Sub: 3 slots
+
+Skills:
+  - Defined per area: 1 general + 1 per weapon = 6 per area
+  - Unlocked by completing areas with specific weapons
+  - Can be equipped regardless of current weapon
+  - Passive effects (stat boosts, special abilities)
+
+================================================================================
+CUSTOMIZATION
+================================================================================
+
+Imp Appearance (stored as single JSON):
+  - Name, color
+  - Horns, mouth, eyes, nose (selectable from lists)
+  - Extras: scars, face paint, etc.
+  - Cosmetic items: earned from achievements, gifts, or gold purchases
+
+Weapon:
+  - Selected from armory at the keep
+  - Determines combat behavior
+  - New weapons unlockable via keep treasures
+
+================================================================================
+DATABASE SCHEMA
+================================================================================
+
+players       - twitchId, username, displayName, role, subTier, timestamps
+imps          - playerId, name, appearance(JSON), weapon, level, xp, stats,
+                skillPoints, gold
+learned_skills    - impId, skillId, slotIndex
+unlocked_skills   - playerId, skillId
+cosmetic_items    - playerId, itemId, source, acquiredAt
+keep              - single row: gold(treasury), materials
+keep_upgrades     - upgradeId, type, level
+keep_treasures    - treasureId, areaId, adventureId, tier, type, effect(JSON)
+adventures        - timestamps, outcome, areasVisited, participantCount
+adventure_participants - adventureId, playerId, survived, steps, kills, xp, gold
+combat_logs       - adventureId, stepNumber, outcome, actions(JSON)
+
+Key: 1:1 player:imp relationship. No classes. Weapon = identity.
+
+================================================================================
+DISPLAY MODES
+================================================================================
+
+Same web app, three views:
+
+  /         - Viewer interface (full player management, responsive mobile/desktop)
+  /overlay  - OBS browser source (compact, transparent background, watch-only)
+  /admin    - Streamer dashboard (game controls, player management, keep upgrades)
+
+All views consume the same game state via WebSocket.
+
+================================================================================
+IMPLEMENTATION PHASES
+================================================================================
+
+Phase 1 - Foundation
+  Monorepo setup, shared types, Express server, SQLite/Drizzle, Socket.IO,
+  Twitch OAuth, minimal React client
+
+Phase 2 - Core Game Loop
+  Game engine state machine, voting system, adventure runner (placeholder combat),
+  Twitch chat bot, full phase cycle end-to-end
+
+Phase 3 - Combat Engine
+  Grid combat simulation with AI, PixiJS renderer, imp selection/rotation,
+  ejection + replacement, rewards flow
+
+Phase 4 - Player Systems
+  Imp customization, XP/leveling/skills, weapon armory, gold economy, cosmetics
+
+Phase 5 - Polish
+  Admin dashboard, Stream Deck webhooks, OBS overlay, keep upgrades,
+  keep treasures, content creation, balance tuning
+
+================================================================================
