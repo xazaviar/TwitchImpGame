@@ -10,7 +10,6 @@ const envSchema = z.object({
   TWITCH_CLIENT_SECRET: z.string().min(1),
   TWITCH_REDIRECT_URI: z.string().url(),
   TWITCH_BOT_USERNAME: z.string().default(""),
-  TWITCH_BOT_OAUTH_TOKEN: z.string().default(""),
   TWITCH_CHANNEL: z.string().default(""),
   STREAMER_TWITCH_ID: z.string().default(""),
   JWT_SECRET: z.string().min(8),

@@ -2,6 +2,7 @@
   "name": "twitch-imp-adventure",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@8.15.9",
   "description": "Interactive Twitch chat game - imps on auto-battler adventures",
   "scripts": {
     "dev": "turbo run dev",
