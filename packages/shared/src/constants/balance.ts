@@ -26,8 +26,8 @@ export const MAX_COMBAT_TURNS = 100;
 
 // Voting
 export const LOCATION_VOTE_DURATION_MS = 60_000; // 1 minute
-export const EVENT_VOTE_DURATION_MS = 30_000; // 30 seconds
-export const POST_BOSS_VOTE_DURATION_MS = 45_000; // 45 seconds
+export const EVENT_VOTE_DURATION_MS = 60_000; // 1 Minute
+export const POST_BOSS_VOTE_DURATION_MS = 60_000; // 1 Minute
 
 // Keep phase
 export const IDLE_AUTO_ADVENTURE_MS = 600_000; // 10 minutes
