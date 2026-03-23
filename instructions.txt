@@ -1,0 +1,91 @@
+================================================================================
+  HORDE & HOARD - QUICK REFERENCE
+================================================================================
+
+STARTING THE PROJECT
+--------------------
+You need two terminals open simultaneously.
+
+  Terminal 1 - Server:
+    cd packages/server
+    npx tsx src/index.ts
+
+  Terminal 2 - Client:
+    cd packages/client
+    npx vite
+
+Both must be running at the same time for the game to work.
+
+
+FIRST-TIME SETUP (one time only)
+---------------------------------
+Before the server will connect to Twitch, you need to authorize two accounts:
+
+  1. Open http://localhost:3001/api/setup in your browser
+  2. Click "Authorize Bot Account" - log in as xazaviar_bot
+  3. Click "Authorize Broadcaster Account" - log in as xazaviar (your stream account)
+  4. Done - tokens are saved and will auto-reconnect on every future startup.
+
+
+URLS AT A GLANCE
+----------------
+
+  http://localhost:3001/api/setup
+    WHO: You (streamer) only
+    WHAT: First-time Twitch authorization dashboard
+
+  http://localhost:5173/
+    WHO: Viewers / community members
+    WHAT: The main game viewer page - shows game state, leaderboards, events
+
+  http://localhost:5173/overlay
+    WHO: You (streamer) - add this as a Browser Source in OBS
+    WHAT: Transparent overlay that sits on top of your stream visuals
+
+  http://localhost:5173/admin
+    WHO: You (streamer) only
+    WHAT: Admin control panel - manage game settings, trigger events manually
+
+
+OBS BROWSER SOURCE SETUP
+--------------------------
+  URL:    http://localhost:5173/overlay
+  Width:  1920
+  Height: 1080
+  Check "Shutdown source when not visible"
+  Check "Refresh browser when scene becomes active"
+
+
+FOR YOUR COMMUNITY
+------------------
+When showcasing to your community, share the viewer URL:
+
+  http://localhost:5173/
+
+  (In the future when hosted online, this will be a public URL they can visit
+  from anywhere without needing the game to be running on their machine.)
+
+Chat commands will be posted here as the game develops.
+
+
+TROUBLESHOOTING
+---------------
+  Port 3001 already in use:
+    - You likely have a previous server still running
+    - Close it with Ctrl+C in its terminal window, then restart
+
+  Twitch chat not connecting:
+    - Visit http://localhost:3001/api/setup and re-authorize the bot account
+    - Check that your .env file has TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET filled in
+
+  Client won't connect to server:
+    - Make sure the server terminal is running first (Terminal 1)
+    - Check that both are using their correct ports (3001 and 5173)
+
+
+PORTS SUMMARY
+-------------
+  3001  - Game server (API + Socket.IO + Twitch bot)
+  5173  - Client dev server (React UI)
+
+================================================================================

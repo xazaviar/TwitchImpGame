@@ -4,7 +4,7 @@ import * as schema from "./schema.js";
 import { existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
 
-const DB_PATH = "./data/imp-adventure.db";
+const DB_PATH = "./data/horde-and-hoard.db";
 
 export function createDatabase() {
   // Ensure data directory exists

@@ -7,7 +7,7 @@ export function ViewerRoute() {
 
   return (
     <div style={{ padding: "2rem", maxWidth: "800px", margin: "0 auto" }}>
-      <h1 style={{ marginBottom: "1rem" }}>Imp Adventure</h1>
+      <h1 style={{ marginBottom: "1rem" }}>Horde &amp; Hoard</h1>
 
       <div
         style={{
