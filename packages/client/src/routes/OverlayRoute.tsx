@@ -24,7 +24,7 @@ export function OverlayRoute() {
         }}
       >
         <span style={{ color: "#e94560", fontWeight: "bold" }}>
-          IMP ADVENTURE
+          HORDE &amp; HOARD
         </span>
         <span style={{ color: "#a0a0b0", marginLeft: "1rem" }}>
           {gameState.phase.toUpperCase()}

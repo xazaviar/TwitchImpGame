@@ -46,7 +46,7 @@ app.get("/api/setup", (_req, res) => {
 
   res.send(`
     <html><body style="font-family:monospace;padding:2em;background:#1a1a2e;color:#eee;max-width:600px;margin:0 auto">
-      <h1>Imp Adventure — Setup</h1>
+      <h1>Horde &amp; Hoard — Setup</h1>
 
       <h2>1. Bot Account Authorization</h2>
       <p>Status: ${botOk ? '<span style="color:#2ecc71">Authorized ✓</span>' : '<span style="color:#e74c3c">Not authorized</span>'}</p>
@@ -152,7 +152,7 @@ app.get("/api/chat/status", (_req, res) => {
 // ─── Start Server ────────────────────────────────────────────────────────────
 
 httpServer.listen(config.PORT, async () => {
-  console.log(`\nImp Adventure server running on port ${config.PORT}`);
+  console.log(`\nHorde & Hoard server running on port ${config.PORT}`);
   console.log(`  API:    http://localhost:${config.PORT}/api`);
   console.log(`  Setup:  http://localhost:${config.PORT}/api/setup`);
   console.log(`  Socket: ws://localhost:${config.PORT}`);
