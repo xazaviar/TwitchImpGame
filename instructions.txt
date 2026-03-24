@@ -36,15 +36,16 @@ URLS AT A GLANCE
 
   http://localhost:5173/
     WHO: Viewers / community members
-    WHAT: The main game viewer page - shows game state, leaderboards, events
+    WHAT: Main game viewer page - see game state, vote on adventures, view activity
+    NOTE: Click "Sign in with Twitch" to link your Twitch account and vote from web
 
   http://localhost:5173/overlay
     WHO: You (streamer) - add this as a Browser Source in OBS
-    WHAT: Transparent overlay that sits on top of your stream visuals
+    WHAT: Transparent overlay showing phase, timers, votes, and announcements
 
   http://localhost:5173/admin
     WHO: You (streamer) only
-    WHAT: Admin control panel - manage game settings, trigger events manually
+    WHAT: Admin dashboard - start/stop adventures, send announcements, monitor game
 
 
 OBS BROWSER SOURCE SETUP
@@ -56,31 +57,56 @@ OBS BROWSER SOURCE SETUP
   Check "Refresh browser when scene becomes active"
 
 
+CHAT COMMANDS
+-------------
+  !join        Create your imp and join the horde (first time only)
+  !vote <#>    Vote during adventure/event votes (e.g. !vote 1, !vote 2)
+  !stats       Check your imp's stats and current adventure info
+  !loot        Check the current adventure's loot pool
+  !help        List available commands
+
+
+HOW THE GAME WORKS (for community)
+-----------------------------------
+  1. Type !join in chat to create your imp
+  2. Wait for the keep countdown or the streamer starts an adventure
+  3. A location vote appears - pick where the horde should go!
+     - Vote "Stay at Keep" to sit this adventure out
+     - Not voting = staying at the keep
+     - All who vote for ANY adventure go on the winning destination
+  4. The horde travels to the destination and faces 5 steps:
+     Combat -> Event -> Combat -> Event -> Boss
+  5. After the boss, vote to push deeper (more loot, more risk) or return home
+  6. Surviving imps bring back gold and materials to the keep!
+
+You can also vote from the web interface at http://localhost:5173/
+by signing in with your Twitch account.
+
+
 FOR YOUR COMMUNITY
 ------------------
-When showcasing to your community, share the viewer URL:
+Share the viewer URL: http://localhost:5173/
+They can sign in with Twitch to vote from the web alongside chat.
 
-  http://localhost:5173/
-
-  (In the future when hosted online, this will be a public URL they can visit
-  from anywhere without needing the game to be running on their machine.)
-
-Chat commands will be posted here as the game develops.
+(When hosted on a VPS later, this will be a public URL accessible anywhere.)
 
 
 TROUBLESHOOTING
 ---------------
   Port 3001 already in use:
     - You likely have a previous server still running
-    - Close it with Ctrl+C in its terminal window, then restart
+    - Close it with Ctrl+C in its terminal, then restart
 
   Twitch chat not connecting:
     - Visit http://localhost:3001/api/setup and re-authorize the bot account
-    - Check that your .env file has TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET filled in
+    - Check that your .env file has TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET
 
   Client won't connect to server:
-    - Make sure the server terminal is running first (Terminal 1)
-    - Check that both are using their correct ports (3001 and 5173)
+    - Make sure the server terminal is running first
+    - Check ports: server = 3001, client = 5173
+
+  "No imps in the horde" when starting adventure:
+    - At least one person needs to !join in chat first
 
 
 PORTS SUMMARY

@@ -25,9 +25,9 @@ export const MAX_IMPS_PER_COMBAT = 5;
 export const MAX_COMBAT_TURNS = 100;
 
 // Voting
-export const LOCATION_VOTE_DURATION_MS = 60_000; // 1 minute
-export const EVENT_VOTE_DURATION_MS = 60_000; // 1 Minute
-export const POST_BOSS_VOTE_DURATION_MS = 60_000; // 1 Minute
+export const LOCATION_VOTE_DURATION_MS = 5_000; // 5 seconds (testing)
+export const EVENT_VOTE_DURATION_MS = 5_000; // 5 seconds (testing)
+export const POST_BOSS_VOTE_DURATION_MS = 5_000; // 5 seconds (testing)
 
 // Keep phase
 export const IDLE_AUTO_ADVENTURE_MS = 600_000; // 10 minutes
