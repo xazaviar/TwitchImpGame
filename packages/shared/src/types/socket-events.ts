@@ -57,4 +57,5 @@ export interface ClientToServerEvents {
   "admin:start_adventure": () => void;
   "admin:stop_adventure": () => void;
   "admin:announce": (data: { message: string }) => void;
+  "admin:spawn_imp": () => void;
 }

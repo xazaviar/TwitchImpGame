@@ -1,13 +1,15 @@
 /**
- * Twitch OAuth routes for bot and broadcaster authorization.
+ * Twitch OAuth routes for bot, broadcaster, and viewer authorization.
  *
  * Flow:
- *   1. Visit /api/auth/bot         → redirects to Twitch OAuth (bot scopes)
- *   2. Visit /api/auth/broadcaster  → redirects to Twitch OAuth (broadcaster scopes)
- *   3. Twitch redirects back to /api/auth/twitch/callback with ?code=...&state=...
- *   4. We exchange the code for tokens and store them
+ *   1. Visit /api/auth/bot         -> redirects to Twitch OAuth (bot scopes)
+ *   2. Visit /api/auth/broadcaster  -> redirects to Twitch OAuth (broadcaster scopes)
+ *   3. Visit /api/auth/viewer       -> redirects to Twitch OAuth (viewer scopes)
+ *   4. Twitch redirects back to /api/auth/twitch/callback with ?code=...&state=...
+ *   5. We exchange the code for tokens, create JWT for viewers
  */
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
+import jwt from "jsonwebtoken";
 import { config } from "../../config.js";
 import {
   exchangeCodeForTokens,
@@ -20,19 +22,18 @@ import {
   updateBroadcasterTokens,
 } from "../../services/token-store.js";
 
-const router = Router();
+const router: Router = Router();
 
 const TWITCH_AUTH_URL = "https://id.twitch.tv/oauth2/authorize";
 
-// Scopes the bot account needs
+// Scopes
 const BOT_SCOPES = ["user:read:chat", "user:write:chat", "user:bot"];
-
-// Scopes the broadcaster needs to grant
 const BROADCASTER_SCOPES = ["channel:bot"];
+const VIEWER_SCOPES = ["user:read:email"]; // Minimal — we just need identity
 
 // ─── Status endpoint ─────────────────────────────────────────────────────────
 
-router.get("/status", (_req, res) => {
+router.get("/status", ((_req, res) => {
   const tokens = loadTokens();
   res.json({
     botAuthorized: !!tokens?.botAccessToken,
@@ -44,25 +45,25 @@ router.get("/status", (_req, res) => {
     broadcasterScopes: tokens?.broadcasterScopes ?? [],
     broadcasterTokenUpdatedAt: tokens?.broadcasterTokenUpdatedAt ?? null,
   });
-});
+}) as RequestHandler);
 
-// ─── Bot Authorization (Step 1) ──────────────────────────────────────────────
+// ─── Bot Authorization ──────────────────────────────────────────────────────
 
-router.get("/bot", (_req, res) => {
+router.get("/bot", ((_req, res) => {
   const params = new URLSearchParams({
     client_id: config.TWITCH_CLIENT_ID,
     redirect_uri: config.TWITCH_REDIRECT_URI,
     response_type: "code",
     scope: BOT_SCOPES.join(" "),
-    state: "bot", // we use state to know which flow we're in
+    state: "bot",
     force_verify: "true",
   });
   res.redirect(`${TWITCH_AUTH_URL}?${params.toString()}`);
-});
+}) as RequestHandler);
 
-// ─── Broadcaster Authorization (Step 2) ──────────────────────────────────────
+// ─── Broadcaster Authorization ──────────────────────────────────────────────
 
-router.get("/broadcaster", (_req, res) => {
+router.get("/broadcaster", ((_req, res) => {
   const params = new URLSearchParams({
     client_id: config.TWITCH_CLIENT_ID,
     redirect_uri: config.TWITCH_REDIRECT_URI,
@@ -72,11 +73,24 @@ router.get("/broadcaster", (_req, res) => {
     force_verify: "true",
   });
   res.redirect(`${TWITCH_AUTH_URL}?${params.toString()}`);
-});
+}) as RequestHandler);
+
+// ─── Viewer Authorization (for web interface) ───────────────────────────────
+
+router.get("/viewer", ((_req, res) => {
+  const params = new URLSearchParams({
+    client_id: config.TWITCH_CLIENT_ID,
+    redirect_uri: config.TWITCH_REDIRECT_URI,
+    response_type: "code",
+    scope: VIEWER_SCOPES.join(" "),
+    state: "viewer",
+  });
+  res.redirect(`${TWITCH_AUTH_URL}?${params.toString()}`);
+}) as RequestHandler);
 
 // ─── Twitch OAuth Callback ──────────────────────────────────────────────────
 
-router.get("/twitch/callback", async (req, res) => {
+router.get("/twitch/callback", (async (req, res) => {
   const code = req.query.code as string | undefined;
   const state = req.query.state as string | undefined;
   const error = req.query.error as string | undefined;
@@ -87,7 +101,7 @@ router.get("/twitch/callback", async (req, res) => {
         <h1 style="color:#e74c3c">Authorization Denied</h1>
         <p>Error: ${error}</p>
         <p>${req.query.error_description ?? ""}</p>
-        <a href="/api/auth/status" style="color:#3498db">← Back to status</a>
+        <a href="/api/auth/status" style="color:#3498db">Back to status</a>
       </body></html>
     `);
   }
@@ -103,23 +117,24 @@ router.get("/twitch/callback", async (req, res) => {
       <html><body style="font-family:monospace;padding:2em;background:#1a1a2e;color:#eee">
         <h1 style="color:#e74c3c">Token Exchange Failed</h1>
         <p>Could not exchange authorization code for tokens. Check server logs.</p>
-        <a href="/api/auth/status" style="color:#3498db">← Back to status</a>
+        <a href="/api/auth/status" style="color:#3498db">Back to status</a>
       </body></html>
     `);
   }
 
-  // Get the user info for this token
+  // Get the user info
   const user = await getUser(tokenResult.access_token);
   if (!user) {
     return res.status(500).send(`
       <html><body style="font-family:monospace;padding:2em;background:#1a1a2e;color:#eee">
         <h1 style="color:#e74c3c">User Lookup Failed</h1>
         <p>Got tokens but couldn't fetch user info. Check server logs.</p>
-        <a href="/api/auth/status" style="color:#3498db">← Back to status</a>
+        <a href="/api/auth/status" style="color:#3498db">Back to status</a>
       </body></html>
     `);
   }
 
+  // ─── Bot flow ─────────────────────────────────────────────────────────────
   if (state === "bot") {
     updateBotTokens(
       tokenResult.access_token,
@@ -140,13 +155,14 @@ router.get("/twitch/callback", async (req, res) => {
         </table>
         <h2>Next Step</h2>
         <p>Now authorize the <strong>broadcaster</strong> account (log into your streamer account first):</p>
-        <a href="/api/auth/broadcaster" style="color:#3498db;font-size:1.2em">Authorize Broadcaster →</a>
+        <a href="/api/auth/broadcaster" style="color:#3498db;font-size:1.2em">Authorize Broadcaster</a>
         <br><br>
         <a href="/api/auth/status" style="color:#888">View auth status</a>
       </body></html>
     `);
   }
 
+  // ─── Broadcaster flow ─────────────────────────────────────────────────────
   if (state === "broadcaster") {
     try {
       updateBroadcasterTokens(
@@ -161,7 +177,7 @@ router.get("/twitch/callback", async (req, res) => {
           <h1 style="color:#e74c3c">Error</h1>
           <p>${err instanceof Error ? err.message : "Unknown error"}</p>
           <p>Please authorize the bot account first.</p>
-          <a href="/api/auth/bot" style="color:#3498db">Authorize Bot →</a>
+          <a href="/api/auth/bot" style="color:#3498db">Authorize Bot</a>
         </body></html>
       `);
     }
@@ -183,12 +199,31 @@ router.get("/twitch/callback", async (req, res) => {
     `);
   }
 
+  // ─── Viewer flow ──────────────────────────────────────────────────────────
+  if (state === "viewer") {
+    // Create a JWT for the viewer to use with Socket.IO
+    const token = jwt.sign(
+      {
+        twitchId: user.id,
+        username: user.login,
+        displayName: user.display_name,
+      },
+      config.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    console.log(`Viewer authenticated: ${user.display_name} (${user.id})`);
+
+    // Redirect to client with token in URL fragment (not in query to avoid logging)
+    return res.redirect(`${config.CLIENT_URL}/?auth=${token}`);
+  }
+
   res.status(400).send("Unknown state parameter.");
-});
+}) as RequestHandler);
 
 // ─── Validate stored tokens ─────────────────────────────────────────────────
 
-router.get("/validate", async (_req, res) => {
+router.get("/validate", (async (_req, res) => {
   const tokens = loadTokens();
   if (!tokens) {
     return res.json({ valid: false, message: "No tokens stored." });
@@ -219,6 +254,25 @@ router.get("/validate", async (_req, res) => {
         : { valid: false, message: "Broadcaster token expired or invalid" }
       : { valid: false, message: "Not yet authorized" },
   });
-});
+}) as RequestHandler);
+
+// ─── Verify JWT (for client-side validation) ────────────────────────────────
+
+router.get("/me", ((req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "No token provided" });
+  }
+
+  try {
+    const decoded = jwt.verify(
+      authHeader.slice(7),
+      config.JWT_SECRET
+    ) as { twitchId: string; username: string; displayName: string };
+    res.json(decoded);
+  } catch {
+    return res.status(401).json({ error: "Invalid token" });
+  }
+}) as RequestHandler);
 
 export default router;
