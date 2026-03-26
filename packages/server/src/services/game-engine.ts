@@ -9,6 +9,7 @@ import type {
   ClientToServerEvents,
   AdventureSummary,
 } from "@imp/shared";
+import type { CombatUnit, GridPosition, LootDrop } from "@imp/shared";
 import {
   LOCATION_VOTE_DURATION_MS,
   EVENT_VOTE_DURATION_MS,
@@ -17,7 +18,26 @@ import {
   IDLE_AUTO_ADVENTURE_MS,
   KEEP_GOLD_PERCENTAGE,
   IMP_GOLD_PERCENTAGE,
+  MAX_IMPS_PER_COMBAT,
+  MAX_COMBAT_ROUNDS,
+  XP_PER_ENEMY_KILL,
+  XP_PER_COMBAT_PARTICIPATION,
+  XP_PER_ASSIST_THRESHOLD,
+  XP_PER_HEAL_THRESHOLD,
+  XP_PER_COMBAT_STEP_SUCCESS,
+  XP_PER_BOSS_SURVIVE,
+  computePlaybackDuration,
+  COMBAT_RESULT_DISPLAY_MS,
+  COMBAT_NETWORK_BUFFER_MS,
+  XP_PER_ADVENTURE_SUCCESS,
+  computeImpStats,
+  getTier,
+  TIER_REWARD_MULTIPLIERS,
+  TIER_ENEMY_HP_MULTIPLIERS,
+  TIER_ENEMY_ATK_MULTIPLIERS,
 } from "@imp/shared";
+import { simulateCombat } from "./combat-simulator.js";
+import type { EnemyCombatInfo } from "./combat-simulator.js";
 import type { VotingService, VoteResults } from "./voting.js";
 import type { AdventureRunner } from "./adventure-runner.js";
 import type { PlayerService } from "./player-service.js";
@@ -47,6 +67,30 @@ export class GameEngine extends EventEmitter {
   private _tempImpCount: number = 0;
   private _tempImpsAlive: number = 0;
 
+  /** Track how many combats each imp has fought this adventure (for fair rotation) */
+  private _combatParticipation: Map<string, number> = new Map();
+
+  /** Track XP earned per imp this adventure */
+  private _adventureXp: Map<string, number> = new Map();
+
+  /** Current HP for each imp during adventure (impId → hp). Persists between combats. */
+  private _impCurrentHp: Map<string, number> = new Map();
+
+  /** Ordered queue of imp IDs for combat rotation. Front = next to fight. */
+  private _impQueue: string[] = [];
+
+  /** Set of imp IDs currently in combat */
+  private _inCombatImps: Set<string> = new Set();
+
+  /** Set of imp IDs that died during this adventure */
+  private _deadImps: Set<string> = new Set();
+
+  /** Persistent weapon assignments for temp imps (assigned once at adventure start) */
+  private _tempImpWeapons: Map<string, string> = new Map();
+
+  /** Areas visited during this adventure (for summary + excluding from post-boss vote) */
+  private _areasVisited: string[] = [];
+
   get phase(): GamePhase {
     return this._phase;
   }
@@ -75,6 +119,24 @@ export class GameEngine extends EventEmitter {
 
   /** How many temp imps are queued */
   get tempImpCount(): number {
+    return this._tempImpCount;
+  }
+
+  /** Get the set of adventure participant twitch IDs */
+  getAdventureParticipantIds(): Set<string> {
+    return new Set(this._adventureParticipants);
+  }
+
+  /** How many temp imps are on the adventure (alive or dead) */
+  getAdventureTempCount(): number {
+    // Count temp_ entries in the queue + dead temp imps
+    const queueTemps = this._impQueue.filter((id) => id.startsWith("temp_")).length;
+    const deadTemps = [...this._deadImps].filter((id) => id.startsWith("temp_")).length;
+    return queueTemps + deadTemps;
+  }
+
+  /** How many temp imps total exist */
+  getTempImpCount(): number {
     return this._tempImpCount;
   }
 
@@ -208,6 +270,14 @@ export class GameEngine extends EventEmitter {
       this._tempImpCount = 0;
     }
     this._tempImpsAlive = 0;
+    this._combatParticipation.clear();
+    this._adventureXp.clear();
+    this._impCurrentHp.clear();
+    this._impQueue = [];
+    this._inCombatImps.clear();
+    this._deadImps.clear();
+    this._tempImpWeapons.clear();
+    this._areasVisited = [];
     this._keepPhaseStartedAt = Date.now();
     this.setPhase("keep");
 
@@ -326,6 +396,10 @@ export class GameEngine extends EventEmitter {
     this._adventureParticipants = new Set(results.adventureVoters);
     this._tempImpsAlive = this._tempImpCount;
 
+    // Initialize imp HP from DB and build the combat queue
+    this.initializeAdventureState([...results.adventureVoters]);
+    this.broadcastQueueUpdate();
+
     const stayCount = results.stayVoters.size;
     const nonVoterCount = this.totalPlayers - results.adventureVoters.size - stayCount;
     console.log(
@@ -346,21 +420,33 @@ export class GameEngine extends EventEmitter {
     const travelDuration = area?.travelDuration ?? DEFAULT_TRAVEL_DURATION_MS;
     const arrivalTime = Date.now() + travelDuration;
 
-    this._adventure = {
-      adventureId: Date.now(),
-      currentAreaId: areaId,
-      currentStep: 0,
-      totalAreasCompleted: 0,
-      survivingImpCount: this._adventureParticipants.size + this._tempImpsAlive,
-      lootPool: { gold: 0, materials: 0, specialItems: [] },
-    };
+    if (this._adventure) {
+      // Continuing adventure — preserve loot, area count, and adventureId
+      this._adventure.currentAreaId = areaId;
+      this._adventure.currentStep = 0;
+      this._adventure.tier = getTier(this._adventure.totalAreasCompleted);
+      this._adventure.survivingImpCount = this._adventureParticipants.size + this._tempImpsAlive;
+    } else {
+      // Fresh adventure
+      this._adventure = {
+        adventureId: Date.now(),
+        currentAreaId: areaId,
+        currentStep: 0,
+        totalAreasCompleted: 0,
+        tier: 1,
+        survivingImpCount: this._adventureParticipants.size + this._tempImpsAlive,
+        lootPool: { gold: 0, materials: { wood: 0, stone: 0, bones: 0 }, specialItems: [] },
+      };
+    }
 
     this._currentDeadline = arrivalTime;
     this.setPhase("traveling");
     this.startTimerBroadcast(arrivalTime);
 
+    this._areasVisited.push(areaId);
+    const tierLabel = this._adventure!.tier > 1 ? ` (Tier ${this._adventure!.tier})` : "";
     this.io.to("game").emit("game:announcement", {
-      message: `The horde marches toward ${area?.name ?? areaId}!`,
+      message: `The horde marches toward ${area?.name ?? areaId}${tierLabel}!`,
     });
 
     this._travelTimer = setTimeout(() => {
@@ -412,7 +498,214 @@ export class GameEngine extends EventEmitter {
     }
   }
 
-  // ─── Combat (Placeholder) ───────────────────────────────────────────────────
+  // ─── Adventure State Tracking ──────────────────────────────────────────────
+
+  /** Initialize HP and combat queue at the start of an adventure */
+  private initializeAdventureState(participantIds: string[]): void {
+    const impMap = this.playerService.getImpsByTwitchIds(participantIds);
+
+    // Set each imp's current HP from their DB maxHp
+    this._impCurrentHp.clear();
+    for (const [twitchId, imp] of impMap.entries()) {
+      this._impCurrentHp.set(twitchId, imp.maxHp);
+    }
+
+    // Initialize temp imp weapons and HP
+    const STARTER_WEAPONS = ["sword", "bow", "staff", "cross", "shield"];
+    this._tempImpWeapons.clear();
+    for (let i = 0; i < this._tempImpsAlive; i++) {
+      const id = `temp_${i}`;
+      const weaponId = STARTER_WEAPONS[Math.floor(Math.random() * STARTER_WEAPONS.length)];
+      this._tempImpWeapons.set(id, weaponId);
+      const stats = computeImpStats(weaponId);
+      this._impCurrentHp.set(id, stats.maxHp);
+    }
+
+    // Initialize queue: combine all IDs then shuffle together
+    const allIds = [...participantIds];
+    for (let i = 0; i < this._tempImpsAlive; i++) {
+      allIds.push(`temp_${i}`);
+    }
+    // Fisher-Yates shuffle for uniform randomness
+    for (let i = allIds.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [allIds[i], allIds[j]] = [allIds[j], allIds[i]];
+    }
+    this._impQueue = allIds;
+
+    this._inCombatImps.clear();
+  }
+
+  /** Get an imp's current HP during adventure (null if not on adventure) */
+  getImpCurrentHp(twitchId: string): number | null {
+    return this._impCurrentHp.get(twitchId) ?? null;
+  }
+
+  /** Get the queue position for an imp (1-based), or null if not in queue */
+  getImpQueuePosition(twitchId: string): number | null {
+    const idx = this._impQueue.indexOf(twitchId);
+    return idx >= 0 ? idx + 1 : null;
+  }
+
+  /** Check if an imp is currently in combat */
+  isImpInCombat(twitchId: string): boolean {
+    return this._inCombatImps.has(twitchId);
+  }
+
+  /** Get imp adventure info for a specific player */
+  getImpAdventureInfo(twitchId: string): {
+    currentHp: number | null;
+    maxHp: number | null;
+    queuePosition: number | null;
+    inCombat: boolean;
+  } | null {
+    if (!this._adventureParticipants.has(twitchId)) return null;
+    const imp = this.playerService.getImpByTwitchId(twitchId);
+    return {
+      currentHp: this._impCurrentHp.get(twitchId) ?? null,
+      maxHp: imp?.maxHp ?? null,
+      queuePosition: this.getImpQueuePosition(twitchId),
+      inCombat: this._inCombatImps.has(twitchId),
+    };
+  }
+
+  // ─── Combat (Real) ─────────────────────────────────────────────────────────
+
+  private selectCombatImps(): { active: CombatUnit[]; reserves: CombatUnit[]; impSpawnPositions: GridPosition[] } {
+    const encounter = this.adventureRunner.getEncounter(
+      this._adventure!.currentAreaId,
+      false // spawn positions are the same for boss and regular
+    );
+    const spawnPositions = encounter?.impSpawnPositions ?? [
+      { x: 0, y: 1 }, { x: 0, y: 3 }, { x: 0, y: 5 }, { x: 1, y: 2 }, { x: 1, y: 4 },
+    ];
+
+    // Use the queue order for selection (front of queue goes first)
+    const realIds = [...this._adventureParticipants];
+    const impMap = this.playerService.getImpsByTwitchIds(realIds);
+
+    // Build ordered list from the queue (only include living adventure participants)
+    const orderedIds: string[] = [];
+    for (const id of this._impQueue) {
+      if (id.startsWith("temp_")) {
+        orderedIds.push(id);
+      } else if (this._adventureParticipants.has(id) && impMap.has(id)) {
+        orderedIds.push(id);
+      }
+    }
+
+    const allUnits: CombatUnit[] = [];
+
+    // Convert to CombatUnits in queue order, using persistent HP
+    for (const id of orderedIds) {
+      if (id.startsWith("temp_")) {
+        const weaponId = this._tempImpWeapons.get(id) ?? "sword";
+        const stats = computeImpStats(weaponId);
+        const currentHp = this._impCurrentHp.get(id) ?? stats.maxHp;
+        allUnits.push({
+          id,
+          name: `Temp Imp ${id.replace("temp_", "")}`,
+          isImp: true,
+          weapon: weaponId,
+          hp: currentHp,
+          maxHp: stats.maxHp,
+          attack: stats.attack,
+          defense: stats.defense,
+          speed: stats.speed,
+          luck: stats.luck,
+          fervor: stats.fervor,
+          position: { x: 0, y: 0 },
+        });
+      } else {
+        const imp = impMap.get(id)!;
+        const currentHp = this._impCurrentHp.get(id) ?? imp.maxHp;
+        allUnits.push({
+          id,
+          name: imp.name,
+          isImp: true,
+          weapon: imp.weapon,
+          hp: currentHp,
+          maxHp: imp.maxHp,
+          attack: imp.attack,
+          defense: imp.defense,
+          speed: imp.speed,
+          luck: imp.luck,
+          fervor: imp.fervor,
+          position: { x: 0, y: 0 },
+        });
+      }
+    }
+
+    // Split into active (up to 5) and reserves
+    const active = allUnits.slice(0, MAX_IMPS_PER_COMBAT);
+    const reserves = allUnits.slice(MAX_IMPS_PER_COMBAT);
+
+    // Assign spawn positions
+    for (let i = 0; i < active.length; i++) {
+      active[i].position = { ...spawnPositions[i % spawnPositions.length] };
+    }
+
+    // Track which imps are actively fighting (not reserves — they keep their queue position)
+    this._inCombatImps.clear();
+    for (const unit of active) {
+      this._inCombatImps.add(unit.id);
+    }
+
+    // Increment combat participation for active real imps
+    for (const unit of active) {
+      if (!unit.id.startsWith("temp_")) {
+        this._combatParticipation.set(unit.id, (this._combatParticipation.get(unit.id) ?? 0) + 1);
+      }
+    }
+
+    return { active, reserves, impSpawnPositions: spawnPositions };
+  }
+
+  private buildEnemyUnits(encounter: NonNullable<ReturnType<AdventureRunner["getEncounter"]>>): { units: CombatUnit[]; info: Record<string, EnemyCombatInfo> } {
+    const tier = this._adventure?.tier ?? 1;
+    const hpMult = TIER_ENEMY_HP_MULTIPLIERS[tier - 1] ?? 1;
+    const atkMult = TIER_ENEMY_ATK_MULTIPLIERS[tier - 1] ?? 1;
+
+    const units: CombatUnit[] = [];
+    const info: Record<string, EnemyCombatInfo> = {};
+    let enemyIdx = 0;
+
+    for (const placement of encounter.enemies) {
+      const def = this.adventureRunner.getEnemyDef(placement.enemyId);
+      if (!def) continue;
+
+      const positions = placement.positions === "random" ? [] : placement.positions;
+      const scaledHp = Math.round(def.hp * hpMult);
+      const scaledAtk = Math.round(def.attack * atkMult);
+
+      for (let i = 0; i < placement.count; i++) {
+        const id = `enemy_${enemyIdx++}`;
+        const pos = positions[i] ?? { x: 7, y: i + 1 };
+        units.push({
+          id,
+          name: def.name,
+          isImp: false,
+          enemyId: def.id,
+          hp: scaledHp,
+          maxHp: scaledHp,
+          attack: scaledAtk,
+          defense: def.defense,
+          speed: def.speed,
+          luck: def.luck,
+          fervor: 0,
+          position: { ...pos },
+        });
+        info[id] = {
+          attackRange: def.attackRange,
+          minAttackRange: def.minAttackRange,
+          requiresLineOfSight: def.requiresLineOfSight,
+          aiType: def.aiType,
+        };
+      }
+    }
+
+    return { units, info };
+  }
 
   private async runCombatStep(step: number, isBoss: boolean): Promise<void> {
     if (!this._adventure) return;
@@ -425,41 +718,318 @@ export class GameEngine extends EventEmitter {
         : `Enemies spotted! Combat begins! (Step ${step}/5)`,
     });
 
-    const result = this.adventureRunner.simulatePlaceholderCombat(
-      this._adventure,
-      isBoss
-    );
+    // Get encounter
+    const encounter = this.adventureRunner.getEncounter(this._adventure.currentAreaId, isBoss);
+    if (!encounter) {
+      console.log(`[GameEngine] No encounter found for ${this._adventure.currentAreaId} (boss=${isBoss})`);
+      return;
+    }
 
+    // Select imps and build enemy units
+    const { active, reserves, impSpawnPositions } = this.selectCombatImps();
+    const { units: enemyUnits, info: enemyInfo } = this.buildEnemyUnits(encounter);
+
+    // Run real combat simulation
+    const result = simulateCombat({
+      activeImps: active,
+      reserveImps: reserves,
+      enemies: enemyUnits,
+      enemyInfo,
+      gridSize: encounter.gridSize,
+      obstacles: encounter.obstacles,
+      impSpawnPositions,
+      maxRounds: MAX_COMBAT_ROUNDS,
+    });
+
+    // Broadcast queue positions before combat starts
+    this.broadcastQueueUpdate();
+
+    // Emit combat start + actions (include obstacles for grid visualization)
+    // activeCount = active imps + enemies (reserves excluded from initial display)
+    const activeCount = active.length + enemyUnits.length;
     this.io.to("game").emit("combat:start", {
       gridSize: result.gridSize,
-      units: result.initialPositions,
+      units: result.initialUnits,
+      activeCount,
+      obstacles: encounter.obstacles,
     });
 
-    await this.delay(3000);
+    // Calculate loot upfront so we can include it with actions
+    const loot: LootDrop = result.outcome === "victory"
+      ? this.adventureRunner.calculateLoot(this._adventure.currentAreaId, isBoss, this._adventure.totalAreasCompleted)
+      : { gold: 0, materials: { wood: 0, stone: 0, bones: 0 }, specialItems: [] };
 
-    this.io.to("game").emit("combat:result", {
-      outcome: result.outcome,
-      loot: result.loot,
-    });
-
-    if (this._adventure) {
-      const losses = this._adventure.survivingImpCount - result.survivingImps;
-      this._adventure.survivingImpCount = result.survivingImps;
-      this._adventure.lootPool.gold += result.loot.gold;
-      this._adventure.lootPool.materials += result.loot.materials;
-
-      // Distribute losses proportionally between temp and real imps
-      if (losses > 0 && this._tempImpsAlive > 0) {
-        const totalBefore = this._adventure.survivingImpCount + losses;
-        const tempLosses = Math.min(
-          this._tempImpsAlive,
-          Math.round(losses * (this._tempImpsAlive / totalBefore))
-        );
-        this._tempImpsAlive = Math.max(0, this._tempImpsAlive - tempLosses);
+    // Add material drops from killed enemies into the loot sent to client
+    if (result.outcome === "victory") {
+      for (const unit of enemyUnits) {
+        const def = this.adventureRunner.getEnemyDef(unit.enemyId ?? "");
+        if (def?.materialDrops) {
+          loot.materials.wood += def.materialDrops.wood ?? 0;
+          loot.materials.stone += def.materialDrops.stone ?? 0;
+          loot.materials.bones += def.materialDrops.bones ?? 0;
+        }
       }
     }
 
-    await this.delay(1500);
+    this.io.to("game").emit("combat:actions", {
+      actions: result.actions,
+      outcome: result.outcome,
+      loot,
+    });
+
+    // Wait for client playback + result display + network buffer
+    const playbackMs = computePlaybackDuration(result.actions)
+      + COMBAT_RESULT_DISPLAY_MS
+      + COMBAT_NETWORK_BUFFER_MS;
+    await this.delay(playbackMs);
+
+    // Update adventure state
+    if (this._adventure) {
+      // Persist surviving imp HP
+      for (const [impId, hp] of Object.entries(result.survivingImpHp)) {
+        this._impCurrentHp.set(impId, hp);
+      }
+
+      // Count ejections
+      const realEjected = result.ejectedImpIds.filter((id) => !id.startsWith("temp_"));
+      const tempEjected = result.ejectedImpIds.filter((id) => id.startsWith("temp_"));
+
+      // Remove ejected imps from HP tracking, queue, and adventure; mark as dead
+      for (const id of realEjected) {
+        this._adventureParticipants.delete(id);
+        this._impCurrentHp.delete(id);
+        this._impQueue = this._impQueue.filter((qId) => qId !== id);
+        this._deadImps.add(id);
+      }
+      for (const id of tempEjected) {
+        this._impCurrentHp.delete(id);
+        this._impQueue = this._impQueue.filter((qId) => qId !== id);
+        this._deadImps.add(id);
+      }
+      this._tempImpsAlive = Math.max(0, this._tempImpsAlive - tempEjected.length);
+
+      this._adventure.survivingImpCount = this._adventureParticipants.size + this._tempImpsAlive;
+      this._adventure.lootPool.gold += loot.gold;
+      this._adventure.lootPool.materials.wood += loot.materials.wood;
+      this._adventure.lootPool.materials.stone += loot.materials.stone;
+      this._adventure.lootPool.materials.bones += loot.materials.bones;
+
+      // Move combat participants to back of queue
+      const participantSet = new Set(result.participants);
+      const frontOfQueue = this._impQueue.filter((id) => !participantSet.has(id));
+      const backOfQueue = this._impQueue.filter((id) => participantSet.has(id));
+      this._impQueue = [...frontOfQueue, ...backOfQueue];
+
+      // Clear in-combat tracking
+      this._inCombatImps.clear();
+
+      // Distribute XP
+      this.distributeXp(result, isBoss);
+
+      // Track combat stats (kills, damage, assists, etc.)
+      this.updateCombatStats(result);
+
+      // Broadcast updated queue positions
+      this.broadcastQueueUpdate();
+    }
+
+    // Delay after result for victory/defeat display before next phase
+    await this.delay(3000);
+  }
+
+  private distributeXp(
+    result: ReturnType<typeof simulateCombat>,
+    isBoss: boolean
+  ): void {
+    // Calculate XP for each participant
+    for (const impId of result.participants) {
+      if (impId.startsWith("temp_")) continue; // Temp imps don't get XP
+
+      let xp = XP_PER_COMBAT_PARTICIPATION; // participation
+
+      // Kill credit
+      const kills = result.killCredit[impId] ?? [];
+      xp += kills.length * XP_PER_ENEMY_KILL;
+
+      // Assists
+      const assistCount = result.assists[impId] ?? 0;
+      xp += Math.floor(assistCount / XP_PER_ASSIST_THRESHOLD);
+
+      // Heals
+      const healCount = result.heals[impId] ?? 0;
+      xp += Math.floor(healCount / XP_PER_HEAL_THRESHOLD);
+
+      // Surviving boss participants get bonus
+      if (isBoss && result.outcome === "victory" && result.survivingImpIds.includes(impId)) {
+        xp += XP_PER_BOSS_SURVIVE;
+      }
+
+      if (xp > 0) {
+        const newXp = this.playerService.addXpToImp(impId, xp);
+        this._adventureXp.set(impId, (this._adventureXp.get(impId) ?? 0) + xp);
+        // Notify player
+        this.io.to(`player:${impId}`).emit("player:xp_gained", {
+          amount: xp,
+          total: newXp,
+          leveledUp: false, // TODO: level-up detection
+        });
+      }
+    }
+
+    // All surviving imps (even non-participants) get step success XP on victory
+    if (result.outcome === "victory") {
+      for (const twitchId of this._adventureParticipants) {
+        if (!result.participants.includes(twitchId)) {
+          const newXp = this.playerService.addXpToImp(twitchId, XP_PER_COMBAT_STEP_SUCCESS);
+          this._adventureXp.set(twitchId, (this._adventureXp.get(twitchId) ?? 0) + XP_PER_COMBAT_STEP_SUCCESS);
+          this.io.to(`player:${twitchId}`).emit("player:xp_gained", {
+            amount: XP_PER_COMBAT_STEP_SUCCESS,
+            total: newXp,
+            leveledUp: false,
+          });
+        }
+      }
+    }
+  }
+
+  /** Extract and record per-player combat stats from a combat result */
+  private updateCombatStats(result: ReturnType<typeof simulateCombat>): void {
+    // Build a lookup: unit id → weapon id (from initialUnits)
+    const unitWeapons = new Map<string, string>();
+    for (const unit of result.initialUnits) {
+      if (unit.weapon) unitWeapons.set(unit.id, unit.weapon);
+    }
+
+    // Per-imp accumulators
+    const damageDealt = new Map<string, number>();
+    const damageTaken = new Map<string, number>();
+    const healingDone = new Map<string, number>();
+    const highestHit = new Map<string, number>();
+    const crits = new Map<string, number>();
+
+    // Parse all actions
+    for (const action of result.actions) {
+      if (action.type === "attack" && action.damage && action.damage > 0) {
+        // Damage dealt by actor
+        const actorDmg = (damageDealt.get(action.actorId) ?? 0) + action.damage;
+        damageDealt.set(action.actorId, actorDmg);
+
+        // Highest single hit
+        const prevMax = highestHit.get(action.actorId) ?? 0;
+        if (action.damage > prevMax) highestHit.set(action.actorId, action.damage);
+
+        // Damage taken by target
+        if (action.targetId) {
+          const targetDmg = (damageTaken.get(action.targetId) ?? 0) + action.damage;
+          damageTaken.set(action.targetId, targetDmg);
+        }
+
+        // Crit tracking
+        if (action.isCrit) {
+          crits.set(action.actorId, (crits.get(action.actorId) ?? 0) + 1);
+        }
+      }
+
+      if (action.type === "heal" && action.healing && action.healing > 0) {
+        const heals = (healingDone.get(action.actorId) ?? 0) + action.healing;
+        healingDone.set(action.actorId, heals);
+      }
+    }
+
+    // Now update stats for each real player imp that participated
+    for (const impId of result.participants) {
+      if (impId.startsWith("temp_")) continue;
+
+      const kills = result.killCredit[impId]?.length ?? 0;
+      const assists = result.assists[impId] ?? 0;
+      const isDead = result.ejectedImpIds.includes(impId);
+      const weaponId = unitWeapons.get(impId);
+      const dmgDealt = damageDealt.get(impId) ?? 0;
+      const dmgTaken = damageTaken.get(impId) ?? 0;
+      const healed = healingDone.get(impId) ?? 0;
+      const critCount = crits.get(impId) ?? 0;
+      const maxHit = highestHit.get(impId) ?? 0;
+
+      // Increment numeric stats
+      this.playerService.incrementStats(impId, {
+        totalKills: kills,
+        totalDamageDealt: dmgDealt,
+        totalDamageTaken: dmgTaken,
+        totalHealingDone: healed,
+        totalAssists: assists,
+        totalDeaths: isDead ? 1 : 0,
+        combatsParticipated: 1,
+        totalCrits: critCount,
+      });
+
+      // Update highest single hit
+      if (maxHit > 0) {
+        this.playerService.updateHighestDamage(impId, maxHit);
+      }
+
+      // Per-weapon damage breakdown
+      if (weaponId && dmgDealt > 0) {
+        this.playerService.addDamageByWeapon(impId, weaponId, dmgDealt);
+      }
+
+      // Per-enemy-type kill breakdown
+      if (kills > 0) {
+        const killedEnemies = result.killCredit[impId] ?? [];
+        // Count kills by enemy type using initialUnits
+        const killsByType = new Map<string, number>();
+        for (const enemyId of killedEnemies) {
+          const enemyUnit = result.initialUnits.find((u) => u.id === enemyId);
+          const enemyTypeId = enemyUnit?.enemyId ?? "unknown";
+          killsByType.set(enemyTypeId, (killsByType.get(enemyTypeId) ?? 0) + 1);
+        }
+        for (const [enemyTypeId, count] of killsByType) {
+          this.playerService.addKillsByEnemyType(impId, enemyTypeId, count);
+        }
+      }
+    }
+  }
+
+  /** Broadcast queue positions to all clients */
+  private broadcastQueueUpdate(): void {
+    // Build queue info: { impId → position (1-based, excluding in-combat), "combat", or "dead" }
+    const queueInfo: Record<string, number | "combat" | "dead"> = {};
+
+    // Number queue positions, skipping in-combat imps so position 1 = next to fight
+    let queueNum = 1;
+    for (const id of this._impQueue) {
+      if (this._inCombatImps.has(id)) {
+        queueInfo[id] = "combat";
+      } else {
+        queueInfo[id] = queueNum++;
+      }
+    }
+
+    // Include dead imps
+    for (const id of this._deadImps) {
+      queueInfo[id] = "dead";
+    }
+
+    // Build imp details for admin view (name, level, weapon)
+    const allIds = [...this._impQueue, ...this._deadImps];
+    const realIds = allIds.filter((id) => !id.startsWith("temp_"));
+    const impMap = this.playerService.getImpsByTwitchIds(realIds);
+    const impDetails: Record<string, { name: string; level: number; weapon: string }> = {};
+    for (const id of allIds) {
+      if (id.startsWith("temp_")) {
+        impDetails[id] = { name: `Temp Imp ${id.replace("temp_", "")}`, level: 1, weapon: this._tempImpWeapons.get(id) ?? "?" };
+      } else {
+        const imp = impMap.get(id);
+        if (imp) {
+          impDetails[id] = { name: imp.name, level: imp.level, weapon: imp.weapon };
+        }
+      }
+    }
+
+    this.io.to("game").emit("game:queue_update", {
+      queue: queueInfo,
+      impHp: Object.fromEntries(this._impCurrentHp),
+      impDetails,
+    });
   }
 
   // ─── Events ─────────────────────────────────────────────────────────────────
@@ -499,7 +1069,21 @@ export class GameEngine extends EventEmitter {
 
     if (this._adventure && outcome.rewards) {
       this._adventure.lootPool.gold += outcome.rewards.gold ?? 0;
-      this._adventure.lootPool.materials += outcome.rewards.materials ?? 0;
+      this._adventure.lootPool.materials.wood += outcome.rewards.wood ?? 0;
+      this._adventure.lootPool.materials.stone += outcome.rewards.stone ?? 0;
+      this._adventure.lootPool.materials.bones += outcome.rewards.bones ?? 0;
+
+      // Apply healing to persistent HP if event heals
+      if (outcome.rewards.healAll) {
+        const healAmount = outcome.rewards.healAll;
+        for (const [impId, currentHp] of this._impCurrentHp.entries()) {
+          // Need maxHp to cap healing
+          const imp = impId.startsWith("temp_") ? null : this.playerService.getImpByTwitchId(impId);
+          const maxHp = imp?.maxHp ?? currentHp; // fallback for temp imps
+          this._impCurrentHp.set(impId, Math.min(maxHp, currentHp + healAmount));
+        }
+        this.broadcastQueueUpdate();
+      }
     }
 
     await this.delay(2000);
@@ -537,9 +1121,9 @@ export class GameEngine extends EventEmitter {
   private beginPostBossVote(): void {
     if (!this._adventure) return;
 
-    // Combined vote: area options (excluding current area) + return home
-    const currentAreaId = this._adventure.currentAreaId;
-    const areas = this.adventureRunner.getAvailableAreas().filter((a) => a.id !== currentAreaId);
+    // Combined vote: area options (excluding all visited areas) + return home
+    const visitedSet = new Set(this._areasVisited);
+    const areas = this.adventureRunner.getAvailableAreas().filter((a) => !visitedSet.has(a.id));
     const options: VoteOption[] = areas.map((a) => ({
       id: a.id,
       name: a.name,
@@ -573,7 +1157,7 @@ export class GameEngine extends EventEmitter {
     });
 
     this.io.to("game").emit("game:announcement", {
-      message: `Area complete! Loot: ${this._adventure.lootPool.gold}g, ${this._adventure.lootPool.materials}m. Pick a new area or return home!`,
+      message: `Area complete! Loot: ${this._adventure.lootPool.gold}g, ${this._adventure.lootPool.materials.wood}w/${this._adventure.lootPool.materials.stone}s/${this._adventure.lootPool.materials.bones}b. Pick a new area or return home!`,
     });
   }
 
@@ -621,21 +1205,49 @@ export class GameEngine extends EventEmitter {
     // Deposit keep's share to DB
     this.playerService.depositToKeep(keepGold, loot.materials);
 
-    // Distribute gold to surviving real player imps (temp imps' share vanishes)
+    // Distribute gold and adventure success XP to surviving real player imps
     for (const twitchId of this._adventureParticipants) {
       if (goldPerImp > 0) {
-        this.playerService.addGoldToImp(twitchId, goldPerImp);
+        const newGold = this.playerService.addGoldToImp(twitchId, goldPerImp);
+        this.io.to(`player:${twitchId}`).emit("player:gold_gained", {
+          amount: goldPerImp,
+          total: newGold,
+        });
       }
+      // Adventure success XP
+      const newXp = this.playerService.addXpToImp(twitchId, XP_PER_ADVENTURE_SUCCESS);
+      this.io.to(`player:${twitchId}`).emit("player:xp_gained", {
+        amount: XP_PER_ADVENTURE_SUCCESS,
+        total: newXp,
+        leveledUp: false,
+      });
+
+      // Track adventure stats: successful adventure + gold earned
+      this.playerService.incrementStats(twitchId, {
+        totalAdventures: 1,
+        successfulAdventures: 1,
+        totalGoldEarned: goldPerImp,
+      });
+    }
+
+    // Also track adventure stats for dead real player imps (they participated but didn't survive)
+    for (const deadId of this._deadImps) {
+      if (deadId.startsWith("temp_")) continue;
+      if (this._adventureParticipants.has(deadId)) continue; // already counted above
+      this.playerService.incrementStats(deadId, {
+        totalAdventures: 1,
+        successfulAdventures: 1,
+      });
     }
 
     this.io.to("game").emit("game:announcement", {
-      message: `The horde returns! Keep receives ${keepGold}g and ${loot.materials}m. Each surviving imp gets ${goldPerImp}g.`,
+      message: `The horde returns! Keep receives ${keepGold}g and ${loot.materials.wood}w/${loot.materials.stone}s/${loot.materials.bones}b. Each surviving imp gets ${goldPerImp}g.`,
     });
 
     const summary: AdventureSummary = {
       adventureId: this._adventure.adventureId,
       outcome: "success",
-      areasVisited: [this._adventure.currentAreaId],
+      areasVisited: [...this._areasVisited],
       areasCompleted: this._adventure.totalAreasCompleted,
       totalSteps: this._adventure.currentStep,
       participantCount: this._adventureParticipants.size + this._tempImpsAlive,
@@ -658,6 +1270,21 @@ export class GameEngine extends EventEmitter {
       message: "All imps have fallen! The horde retreats in shame...",
     });
 
+    // Track adventure stats for all participants (failure — no gold, not successful)
+    for (const twitchId of this._adventureParticipants) {
+      this.playerService.incrementStats(twitchId, {
+        totalAdventures: 1,
+      });
+    }
+    // Dead imps who were removed from _adventureParticipants
+    for (const deadId of this._deadImps) {
+      if (deadId.startsWith("temp_")) continue;
+      if (this._adventureParticipants.has(deadId)) continue;
+      this.playerService.incrementStats(deadId, {
+        totalAdventures: 1,
+      });
+    }
+
     const summary: AdventureSummary = {
       adventureId: this._adventure?.adventureId ?? 0,
       outcome: "failure",
@@ -666,7 +1293,7 @@ export class GameEngine extends EventEmitter {
       totalSteps: this._adventure?.currentStep ?? 0,
       participantCount: this._adventureParticipants.size,
       goldCollected: 0,
-      materialsCollected: 0,
+      materialsCollected: { wood: 0, stone: 0, bones: 0 },
     };
 
     this.io.to("game").emit("game:adventure_ended", {

@@ -23,6 +23,8 @@ export interface Imp {
   attack: number;
   defense: number;
   speed: number;
+  luck: number;
+  fervor: number;
   skillPoints: number;
   gold: number;
 }

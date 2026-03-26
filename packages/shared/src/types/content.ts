@@ -21,7 +21,9 @@ export interface AreaDefinition {
 export interface CombatEncounterDef {
   id: string;
   gridSize: GridSize;
+  impSpawnPositions: GridPosition[];
   enemies: EnemyPlacementDef[];
+  obstacles: GridPosition[];
   terrain: TerrainDef[];
 }
 
@@ -36,9 +38,16 @@ export interface TerrainDef {
   position: GridPosition;
 }
 
+import type { Materials } from "./game.js";
+
+export interface MaterialRange {
+  min: number;
+  max: number;
+}
+
 export interface LootTableDef {
   goldRange: { min: number; max: number };
-  materialsRange: { min: number; max: number };
+  materialsRange: { wood: MaterialRange; stone: MaterialRange; bones: MaterialRange };
   bossGoldMultiplier: number;
   specialItems: string[];
 }
@@ -77,11 +86,16 @@ export interface EnemyDefinition {
   attack: number;
   defense: number;
   speed: number;
+  luck: number;
   attackRange: number;
+  minAttackRange: number;
+  requiresLineOfSight: boolean;
   aiType: EnemyAIType;
   abilities: EnemyAbilityDef[];
   spriteKey: string;
   isBoss?: boolean;
+  /** Materials dropped when this enemy is killed */
+  materialDrops?: Partial<Materials>;
 }
 
 export type EventOutcomeType = "luck" | "guaranteed" | "skill_check";
@@ -101,7 +115,9 @@ export interface EventResultDef {
   narrative: string;
   rewards?: {
     gold?: number;
-    materials?: number;
+    wood?: number;
+    stone?: number;
+    bones?: number;
     healAll?: number;
   };
   penalties?: {

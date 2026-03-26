@@ -1,7 +1,7 @@
 import { useSocket } from "../hooks/useSocket.js";
 import { useGameState } from "../hooks/useGameState.js";
 import { useGameStore } from "../stores/game.store.js";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 const cardStyle: React.CSSProperties = {
   padding: "1rem",
@@ -54,12 +54,34 @@ export function AdminRoute() {
     keepCount,
     nextAdventureTime,
     keepGold,
-    keepMaterials,
+    keepWood,
+    keepStone,
+    keepBones,
     announcements,
     voteOptions,
     voteTallies,
+    serverQueue,
+    queueImpDetails,
   } = useGameStore();
   const [announceText, setAnnounceText] = useState("");
+  const [keepImps, setKeepImps] = useState<{ id: string; name: string; level: number; weapon: string; isTemp: boolean }[]>([]);
+
+  // Fetch keep imps periodically
+  const fetchKeepImps = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/imps");
+      if (res.ok) {
+        const data = await res.json();
+        setKeepImps(data.keepImps ?? []);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    fetchKeepImps();
+    const interval = setInterval(fetchKeepImps, 5000);
+    return () => clearInterval(interval);
+  }, [fetchKeepImps]);
 
   const isKeep = gameState.phase === "keep";
 
@@ -113,8 +135,10 @@ export function AdminRoute() {
             <p>Step: {gameState.adventure.currentStep}/5</p>
             <p>Surviving: {gameState.adventure.survivingImpCount} imps</p>
             <p>
-              Loot: {gameState.adventure.lootPool.gold}g,{" "}
-              {gameState.adventure.lootPool.materials}m
+              Loot: {gameState.adventure.lootPool.gold}g |{" "}
+              {gameState.adventure.lootPool.materials.wood}w /{" "}
+              {gameState.adventure.lootPool.materials.stone}s /{" "}
+              {gameState.adventure.lootPool.materials.bones}b
             </p>
           </div>
         )}
@@ -127,8 +151,14 @@ export function AdminRoute() {
           <span style={{ color: "var(--warning)", fontSize: "1.1rem" }}>
             Gold: <strong>{keepGold}</strong>
           </span>
-          <span style={{ color: "var(--accent)", fontSize: "1.1rem" }}>
-            Materials: <strong>{keepMaterials}</strong>
+          <span style={{ color: "#8B6914", fontSize: "1.1rem" }}>
+            Wood: <strong>{keepWood}</strong>
+          </span>
+          <span style={{ color: "#888", fontSize: "1.1rem" }}>
+            Stone: <strong>{keepStone}</strong>
+          </span>
+          <span style={{ color: "#d4c5a9", fontSize: "1.1rem" }}>
+            Bones: <strong>{keepBones}</strong>
           </span>
         </div>
       </div>
@@ -233,6 +263,97 @@ export function AdminRoute() {
           ))}
         </div>
       )}
+
+      {/* Imp Queue (during adventure) */}
+      {!isKeep && Object.keys(serverQueue).length > 0 && (
+        <div style={cardStyle}>
+          <h2 style={{ marginBottom: "0.5rem" }}>Imp Queue</h2>
+          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+            {(() => {
+              // Sort: combat first, then by queue number, then dead
+              const entries = Object.entries(serverQueue);
+              entries.sort((a, b) => {
+                const order = (v: number | "combat" | "dead") =>
+                  v === "combat" ? 0 : v === "dead" ? 2 : 1;
+                const oa = order(a[1]);
+                const ob = order(b[1]);
+                if (oa !== ob) return oa - ob;
+                if (typeof a[1] === "number" && typeof b[1] === "number") return a[1] - b[1];
+                return 0;
+              });
+              return entries.map(([id, status]) => {
+                const details = queueImpDetails[id];
+                const name = details?.name ?? id;
+                const level = details?.level ?? "?";
+                const weapon = details?.weapon ?? "?";
+                const isDead = status === "dead";
+                const inCombat = status === "combat";
+                return (
+                  <div
+                    key={id}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      padding: "0.25rem 0.5rem",
+                      borderRadius: "4px",
+                      backgroundColor: inCombat
+                        ? "rgba(248, 113, 113, 0.15)"
+                        : "var(--bg-secondary)",
+                      textDecoration: isDead ? "line-through" : "none",
+                      opacity: isDead ? 0.5 : 1,
+                      borderLeft: inCombat ? "3px solid #f87171" : "3px solid transparent",
+                    }}
+                  >
+                    <span>
+                      {inCombat && <span style={{ color: "#f87171", fontWeight: "bold", marginRight: "0.5rem" }}>FIGHTING</span>}
+                      {typeof status === "number" && <span style={{ color: "var(--text-secondary)", marginRight: "0.5rem" }}>#{status}</span>}
+                      {isDead && <span style={{ color: "#888", marginRight: "0.5rem" }}>DEAD</span>}
+                      <strong>{name}</strong>
+                    </span>
+                    <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
+                      Lv.{level} &middot; {weapon}
+                    </span>
+                  </div>
+                );
+              });
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* Keep Imps */}
+      <div style={cardStyle}>
+        <h2 style={{ marginBottom: "0.5rem" }}>
+          Imps at Keep
+          <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem", fontWeight: "normal", marginLeft: "0.5rem" }}>
+            ({keepImps.length})
+          </span>
+        </h2>
+        {keepImps.length === 0 && (
+          <p style={{ color: "var(--text-secondary)" }}>No imps at the keep.</p>
+        )}
+        <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+          {keepImps.map((imp) => (
+            <div
+              key={imp.id}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                padding: "0.25rem 0.5rem",
+                borderRadius: "4px",
+                backgroundColor: "var(--bg-secondary)",
+                opacity: imp.isTemp ? 0.6 : 1,
+              }}
+            >
+              <strong>{imp.name}</strong>
+              <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
+                Lv.{imp.level} &middot; {imp.weapon}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
 
       {/* Activity log */}
       <div style={{ ...cardStyle, maxHeight: "300px", overflowY: "auto" }}>

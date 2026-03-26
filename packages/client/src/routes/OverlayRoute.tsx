@@ -2,6 +2,7 @@ import { useGameState } from "../hooks/useGameState.js";
 import { useSocket } from "../hooks/useSocket.js";
 import { useGameStore } from "../stores/game.store.js";
 import { useEffect, useState } from "react";
+import { CombatPlayback } from "../components/CombatPlayback.js";
 
 function KeepCountdown({ nextAdventureTime }: { nextAdventureTime: number }) {
   const [remaining, setRemaining] = useState(0);
@@ -41,6 +42,8 @@ export function OverlayRoute() {
     voteTallies,
     voteResult,
     eventOutcome,
+    combatUnits,
+    combatActions,
     combatOutcome,
     combatLoot,
     adventureSummary,
@@ -155,6 +158,28 @@ export function OverlayRoute() {
         </div>
       )}
 
+      {/* Combat playback (compact) */}
+      {combatUnits.length > 0 && combatActions.length > 0 && !combatOutcome && (
+        <div
+          style={{
+            backgroundColor: "rgba(0, 0, 0, 0.7)",
+            padding: "0.5rem 1rem",
+            borderRadius: "4px",
+            display: "inline-block",
+            marginLeft: "0.5rem",
+            maxWidth: "300px",
+            verticalAlign: "top",
+          }}
+        >
+          <CombatPlayback
+            units={combatUnits}
+            actions={combatActions}
+            outcome={combatOutcome}
+            compact
+          />
+        </div>
+      )}
+
       {/* Combat outcome */}
       {combatOutcome && (
         <div
@@ -171,7 +196,7 @@ export function OverlayRoute() {
           </span>
           {combatLoot && combatOutcome === "victory" && (
             <span style={{ color: "#ff9800", marginLeft: "0.5rem" }}>
-              +{combatLoot.gold}g, +{combatLoot.materials}m
+              +{combatLoot.gold}g | {combatLoot.materials.wood}w / {combatLoot.materials.stone}s / {combatLoot.materials.bones}b
             </span>
           )}
         </div>
@@ -193,7 +218,7 @@ export function OverlayRoute() {
           </span>
           {adventureSummary.outcome === "success" && (
             <span style={{ color: "#ff9800", marginLeft: "0.5rem" }}>
-              {adventureSummary.goldCollected}g, {adventureSummary.materialsCollected}m
+              {adventureSummary.goldCollected}g | {adventureSummary.materialsCollected.wood}w / {adventureSummary.materialsCollected.stone}s / {adventureSummary.materialsCollected.bones}b
             </span>
           )}
         </div>

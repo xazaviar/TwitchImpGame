@@ -2,7 +2,8 @@ import { useSocket } from "../hooks/useSocket.js";
 import { useGameState } from "../hooks/useGameState.js";
 import { useGameStore, type ImpData } from "../stores/game.store.js";
 import { useAuth } from "../hooks/useAuth.js";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { CombatPlayback } from "../components/CombatPlayback.js";
 
 const cardStyle: React.CSSProperties = {
   padding: "1rem",
@@ -36,7 +37,44 @@ function KeepCountdown({ nextAdventureTime }: { nextAdventureTime: number }) {
   );
 }
 
-function ImpCard({ imp }: { imp: ImpData }) {
+function StatBar({ label, current, max, color }: {
+  label: string;
+  current: number;
+  max: number;
+  color: string;
+}) {
+  const pct = max > 0 ? Math.min(100, (current / max) * 100) : 0;
+  return (
+    <div style={{ marginTop: "0.35rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", marginBottom: "2px" }}>
+        <span style={{ color }}>{label}</span>
+        <span style={{ color }}><strong>{current}</strong> / {max}</span>
+      </div>
+      <div style={{
+        height: "6px",
+        borderRadius: "3px",
+        backgroundColor: "rgba(255,255,255,0.1)",
+        overflow: "hidden",
+      }}>
+        <div style={{
+          height: "100%",
+          width: `${pct}%`,
+          backgroundColor: color,
+          borderRadius: "3px",
+          transition: "width 0.3s ease",
+        }} />
+      </div>
+    </div>
+  );
+}
+
+function ImpCard({ imp, currentHp, currentFervor, queuePosition, isAdventureActive }: {
+  imp: ImpData;
+  currentHp: number | null;
+  currentFervor: number | null;
+  queuePosition: number | "combat" | "dead" | null;
+  isAdventureActive: boolean;
+}) {
   const weaponColors: Record<string, string> = {
     sword: "#e94560",
     bow: "#4caf50",
@@ -45,25 +83,69 @@ function ImpCard({ imp }: { imp: ImpData }) {
     shield: "#2196f3",
   };
   const color = weaponColors[imp.weapon] ?? "var(--accent)";
+  const isOnAdventure = currentHp !== null || queuePosition !== null;
+  const displayHp = isOnAdventure && currentHp !== null ? currentHp : imp.maxHp;
+
+  // Determine status badge
+  let badgeLabel: string | null = null;
+  let badgeBg = "rgba(74, 222, 128, 0.15)";
+  let badgeColor = "#4ade80";
+  if (queuePosition === "combat") {
+    badgeLabel = "IN COMBAT";
+    badgeBg = "rgba(248, 113, 113, 0.2)";
+    badgeColor = "#f87171";
+  } else if (queuePosition === "dead") {
+    badgeLabel = "DEAD";
+    badgeBg = "rgba(150, 150, 150, 0.2)";
+    badgeColor = "#888";
+  } else if (typeof queuePosition === "number") {
+    badgeLabel = `Queue #${queuePosition}`;
+  } else if (isAdventureActive) {
+    badgeLabel = "AT KEEP";
+    badgeBg = "rgba(100, 100, 150, 0.15)";
+    badgeColor = "#8888aa";
+  }
 
   return (
     <div style={{ ...cardStyle, borderLeft: `3px solid ${color}` }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
         <h3 style={{ margin: 0 }}>{imp.name}</h3>
-        <span style={{ color, fontWeight: "bold", textTransform: "capitalize" }}>
-          {imp.weapon}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          {badgeLabel && (
+            <span style={{
+              fontSize: "0.75rem",
+              padding: "2px 8px",
+              borderRadius: "4px",
+              fontWeight: "bold",
+              backgroundColor: badgeBg,
+              color: badgeColor,
+            }}>
+              {badgeLabel}
+            </span>
+          )}
+          <span style={{ color, fontWeight: "bold", textTransform: "capitalize" }}>
+            {imp.weapon}
+          </span>
+        </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.25rem 1rem", fontSize: "0.9rem" }}>
-        <span>Level: <strong>{imp.level}</strong></span>
+
+      {/* Level / XP / Gold */}
+      <div style={{ display: "flex", gap: "1rem", fontSize: "0.9rem", marginBottom: "0.25rem" }}>
+        <span>Lv. <strong>{imp.level}</strong></span>
         <span>XP: <strong>{imp.xp}</strong></span>
-        <span style={{ color: "#e94560" }}>HP: <strong>{imp.maxHp}</strong></span>
+        <span style={{ color: "var(--warning)" }}>Gold: <strong>{imp.gold}</strong></span>
+      </div>
+
+      {/* HP and Energy bars */}
+      <StatBar label="HP" current={displayHp} max={imp.maxHp} color="#e94560" />
+      <StatBar label="Energy" current={currentFervor ?? 0} max={10} color="#ffd700" />
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.25rem 1rem", fontSize: "0.9rem", marginTop: "0.5rem" }}>
         <span style={{ color: "#ff5722" }}>ATK: <strong>{imp.attack}</strong></span>
         <span style={{ color: "#2196f3" }}>DEF: <strong>{imp.defense}</strong></span>
-        <span style={{ color: "#4caf50" }}>SPD: <strong>{imp.speed}</strong></span>
-      </div>
-      <div style={{ marginTop: "0.5rem", fontSize: "0.85rem", color: "var(--warning)" }}>
-        Gold: {imp.gold}
+        <span style={{ color: "#6d1ad9" }}>SPD: <strong>{imp.speed}</strong></span>
+        <span style={{ color: "#4caf50" }}>LCK: <strong>{imp.luck}</strong></span>
+        <span style={{ color: "#ffd700" }}>FRV: <strong>{imp.fervor}</strong></span>
       </div>
     </div>
   );
@@ -86,13 +168,41 @@ export function ViewerRoute() {
     voteResult,
     voteType,
     combatUnits,
+    combatActiveCount,
+    combatActions,
+    combatObstacles,
+    combatGrid,
     combatOutcome,
     combatLoot,
     currentEvent,
     eventOutcome,
     announcements,
     adventureSummary,
+    queuePosition,
+    impCurrentHp,
+    impCurrentFervor,
+    setCombatLiveState,
+    setImpPlaybackDead,
+    applyCombatQueueDelta,
   } = useGameStore();
+
+  // Find player's twitch ID for combat tracking
+  const stored = localStorage.getItem("hh_user");
+  const myTwitchId = stored ? JSON.parse(stored)?.twitchId : null;
+
+  // Callback for live combat updates from CombatPlayback
+  const handleMyImpUpdate = useCallback((state: { hp: number; maxHp: number; fervor: number; alive: boolean } | null) => {
+    if (!state) return;
+    setCombatLiveState(state.hp, state.fervor);
+    if (!state.alive) {
+      setImpPlaybackDead();
+    }
+  }, [setCombatLiveState, setImpPlaybackDead]);
+
+  // Callback for queue changes during combat playback
+  const handleQueueChange = useCallback((deadImpIds: string[], reinforcedImpIds: string[]) => {
+    applyCombatQueueDelta(deadImpIds, reinforcedImpIds, myTwitchId);
+  }, [applyCombatQueueDelta, myTwitchId]);
 
   return (
     <div style={{ padding: "2rem", maxWidth: "800px", margin: "0 auto" }}>
@@ -155,7 +265,15 @@ export function ViewerRoute() {
       </div>
 
       {/* Your Imp */}
-      {user && myImp && <ImpCard imp={myImp} />}
+      {user && myImp && (
+        <ImpCard
+          imp={myImp}
+          currentHp={impCurrentHp}
+          currentFervor={impCurrentFervor}
+          queuePosition={queuePosition}
+          isAdventureActive={gameState.phase !== "keep"}
+        />
+      )}
       {user && !myImp && (
         <div style={{ ...cardStyle, borderLeft: "3px solid var(--text-secondary)" }}>
           <p style={{ color: "var(--text-secondary)" }}>
@@ -209,12 +327,22 @@ export function ViewerRoute() {
         {/* Adventure stats */}
         {"adventure" in gameState && gameState.adventure && (
           <div style={{ marginTop: "0.5rem" }}>
-            <p>Area: <strong>{gameState.adventure.currentAreaId}</strong></p>
+            <p>Area: <strong>{gameState.adventure.currentAreaId}</strong>
+              <span style={{
+                color: gameState.adventure.tier >= 3 ? "#ff4444" : gameState.adventure.tier >= 2 ? "#ffd700" : "#aaa",
+                fontWeight: "bold",
+                marginLeft: "0.5rem",
+              }}>
+                TIER {gameState.adventure.tier}
+              </span>
+            </p>
             <p>Step: {gameState.adventure.currentStep} / 5</p>
             <p>Surviving: {gameState.adventure.survivingImpCount} imps</p>
             <p>
-              Loot: {gameState.adventure.lootPool.gold}g,{" "}
-              {gameState.adventure.lootPool.materials}m
+              Loot: {gameState.adventure.lootPool.gold}g |{" "}
+              {gameState.adventure.lootPool.materials.wood}w /{" "}
+              {gameState.adventure.lootPool.materials.stone}s /{" "}
+              {gameState.adventure.lootPool.materials.bones}b
             </p>
           </div>
         )}
@@ -284,40 +412,23 @@ export function ViewerRoute() {
 
       {/* Combat */}
       {combatUnits.length > 0 && (
-        <div style={cardStyle}>
-          <h3 style={{ marginBottom: "0.5rem" }}>Combat</h3>
-          <div style={{ display: "flex", gap: "2rem" }}>
-            <div>
-              <h4 style={{ color: "var(--success)", marginBottom: "0.25rem" }}>Imps</h4>
-              {combatUnits
-                .filter((u) => u.isImp)
-                .map((u) => (
-                  <p key={u.id}>
-                    {u.name} ({u.weapon}) — {u.hp}/{u.maxHp} HP
-                  </p>
-                ))}
-            </div>
-            <div>
-              <h4 style={{ color: "var(--error)", marginBottom: "0.25rem" }}>Enemies</h4>
-              {combatUnits
-                .filter((u) => !u.isImp)
-                .map((u) => (
-                  <p key={u.id}>
-                    {u.name} — {u.hp}/{u.maxHp} HP
-                  </p>
-                ))}
-            </div>
-          </div>
-          {combatOutcome && (
-            <p style={{ marginTop: "0.5rem", fontWeight: "bold", color: combatOutcome === "victory" ? "var(--success)" : "var(--error)" }}>
-              {combatOutcome === "victory" ? "Victory!" : "Defeat..."}
-              {combatLoot && combatOutcome === "victory" && (
-                <span style={{ fontWeight: "normal", color: "var(--warning)" }}>
-                  {" "}— +{combatLoot.gold}g, +{combatLoot.materials}m
-                </span>
-              )}
-            </p>
-          )}
+        <CombatPlayback
+          units={combatUnits}
+          activeCount={combatActiveCount}
+          actions={combatActions}
+          outcome={combatOutcome}
+          obstacles={combatObstacles}
+          gridSize={combatGrid ?? undefined}
+          myImpId={myTwitchId}
+          onMyImpUpdate={handleMyImpUpdate}
+          onQueueChange={handleQueueChange}
+        />
+      )}
+      {combatOutcome && combatLoot && combatOutcome === "victory" && (
+        <div style={{ ...cardStyle, borderLeft: "3px solid var(--warning)" }}>
+          <p style={{ color: "var(--warning)" }}>
+            Loot: +{combatLoot.gold}g | {combatLoot.materials.wood}w / {combatLoot.materials.stone}s / {combatLoot.materials.bones}b
+          </p>
         </div>
       )}
 
@@ -369,7 +480,9 @@ export function ViewerRoute() {
           {eventOutcome.rewards && (
             <p style={{ color: "var(--success)" }}>
               {eventOutcome.rewards.gold ? `+${eventOutcome.rewards.gold}g ` : ""}
-              {eventOutcome.rewards.materials ? `+${eventOutcome.rewards.materials}m ` : ""}
+              {eventOutcome.rewards.wood ? `+${eventOutcome.rewards.wood} wood ` : ""}
+              {eventOutcome.rewards.stone ? `+${eventOutcome.rewards.stone} stone ` : ""}
+              {eventOutcome.rewards.bones ? `+${eventOutcome.rewards.bones} bones ` : ""}
               {eventOutcome.rewards.healAll ? `+${eventOutcome.rewards.healAll} HP` : ""}
             </p>
           )}
@@ -382,7 +495,7 @@ export function ViewerRoute() {
           <h3>Adventure Complete</h3>
           <p>Outcome: <strong>{adventureSummary.outcome}</strong></p>
           <p>Areas completed: {adventureSummary.areasCompleted}</p>
-          <p>Gold: {adventureSummary.goldCollected} | Materials: {adventureSummary.materialsCollected}</p>
+          <p>Gold: {adventureSummary.goldCollected} | Wood: {adventureSummary.materialsCollected.wood} | Stone: {adventureSummary.materialsCollected.stone} | Bones: {adventureSummary.materialsCollected.bones}</p>
         </div>
       )}
 

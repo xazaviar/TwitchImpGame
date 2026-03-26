@@ -1,10 +1,10 @@
 /**
  * Player & Imp management — database operations for creating/fetching players and imps.
  */
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { DrizzleDB } from "../db/index.js";
-import { players, imps, keep } from "../db/schema.js";
-import { BASE_WEAPONS } from "@imp/shared";
+import { players, imps, keep, playerStats } from "../db/schema.js";
+import { BASE_WEAPONS, computeImpStats } from "@imp/shared";
 
 const IMP_NAMES = [
   "Gnarltooth",
@@ -51,12 +51,16 @@ export interface ImpRecord {
   attack: number;
   defense: number;
   speed: number;
+  luck: number;
+  fervor: number;
   gold: number;
 }
 
 export interface KeepRecord {
   gold: number;
-  materials: number;
+  wood: number;
+  stone: number;
+  bones: number;
 }
 
 export class PlayerService {
@@ -64,6 +68,41 @@ export class PlayerService {
 
   constructor(db: DrizzleDB) {
     this.db = db;
+    this.syncAllImpStats();
+  }
+
+  /** Re-derive all imp stats from their weapon on startup (picks up weapon balance changes) */
+  private syncAllImpStats(): void {
+    const allImps = this.db.select().from(imps).all();
+    let updated = 0;
+    for (const imp of allImps) {
+      const stats = computeImpStats(imp.weapon);
+      if (
+        imp.maxHp !== stats.maxHp ||
+        imp.attack !== stats.attack ||
+        imp.defense !== stats.defense ||
+        imp.speed !== stats.speed ||
+        imp.luck !== stats.luck ||
+        imp.fervor !== stats.fervor
+      ) {
+        this.db
+          .update(imps)
+          .set({
+            maxHp: stats.maxHp,
+            attack: stats.attack,
+            defense: stats.defense,
+            speed: stats.speed,
+            luck: stats.luck,
+            fervor: stats.fervor,
+          })
+          .where(eq(imps.id, imp.id))
+          .run();
+        updated++;
+      }
+    }
+    if (updated > 0) {
+      console.log(`[PlayerService] Synced stats for ${updated} imp(s) to match current weapon definitions.`);
+    }
   }
 
   /** Get or create a player + imp by Twitch info. Returns {player, imp, isNew}. */
@@ -133,6 +172,9 @@ export class PlayerService {
 
     const imp = this.createImp(playerId);
 
+    // Initialize lifetime stats row
+    this.getOrCreateStats(playerId);
+
     return { player, imp, isNew: true };
   }
 
@@ -140,7 +182,7 @@ export class PlayerService {
   private createImp(playerId: number): ImpRecord {
     const name = this.pickRandomName();
     const weaponId = STARTER_WEAPONS[Math.floor(Math.random() * STARTER_WEAPONS.length)];
-    const weapon = BASE_WEAPONS[weaponId];
+    const stats = computeImpStats(weaponId);
 
     const result = this.db
       .insert(imps)
@@ -159,10 +201,12 @@ export class PlayerService {
         weapon: weaponId,
         level: 1,
         xp: 0,
-        maxHp: weapon.baseStats.maxHp,
-        attack: weapon.baseStats.attack,
-        defense: weapon.baseStats.defense,
-        speed: weapon.baseStats.speed,
+        maxHp: stats.maxHp,
+        attack: stats.attack,
+        defense: stats.defense,
+        speed: stats.speed,
+        luck: stats.luck,
+        fervor: stats.fervor,
         skillPoints: 0,
         gold: 0,
       })
@@ -175,10 +219,12 @@ export class PlayerService {
       weapon: weaponId,
       level: 1,
       xp: 0,
-      maxHp: weapon.baseStats.maxHp,
-      attack: weapon.baseStats.attack,
-      defense: weapon.baseStats.defense,
-      speed: weapon.baseStats.speed,
+      maxHp: stats.maxHp,
+      attack: stats.attack,
+      defense: stats.defense,
+      speed: stats.speed,
+      luck: stats.luck,
+      fervor: stats.fervor,
       gold: 0,
     };
   }
@@ -240,6 +286,31 @@ export class PlayerService {
     return rows.length;
   }
 
+  /** Get all imps with their owner's twitchId */
+  getAllImpsWithTwitchId(): (ImpRecord & { twitchId: string })[] {
+    const rows = this.db
+      .select({
+        id: imps.id,
+        playerId: imps.playerId,
+        name: imps.name,
+        weapon: imps.weapon,
+        level: imps.level,
+        xp: imps.xp,
+        maxHp: imps.maxHp,
+        attack: imps.attack,
+        defense: imps.defense,
+        speed: imps.speed,
+        luck: imps.luck,
+        fervor: imps.fervor,
+        gold: imps.gold,
+        twitchId: players.twitchId,
+      })
+      .from(imps)
+      .innerJoin(players, eq(imps.playerId, players.id))
+      .all();
+    return rows as (ImpRecord & { twitchId: string })[];
+  }
+
   /** Get all player Twitch IDs */
   getAllPlayerTwitchIds(): string[] {
     const rows = this.db
@@ -249,35 +320,196 @@ export class PlayerService {
     return rows.map((r) => r.twitchId);
   }
 
-  /** Get keep treasury (gold + materials) */
+  /** Get keep treasury (gold + typed materials) */
   getKeepTreasury(): KeepRecord {
     const row = this.db.select().from(keep).get();
-    return { gold: row?.gold ?? 0, materials: row?.materials ?? 0 };
+    return {
+      gold: row?.gold ?? 0,
+      wood: row?.wood ?? 0,
+      stone: row?.stone ?? 0,
+      bones: row?.bones ?? 0,
+    };
   }
 
-  /** Deposit gold and materials to the keep treasury */
-  depositToKeep(gold: number, materials: number): void {
+  /** Add XP to a player's imp by twitch ID. Returns new total (no level-up logic yet). */
+  addXpToImp(twitchId: string, amount: number): number {
+    const player = this.getPlayerByTwitchId(twitchId);
+    if (!player) return 0;
+    const imp = this.getImpByPlayerId(player.id);
+    if (!imp) return 0;
+    const newXp = imp.xp + amount;
+    this.db
+      .update(imps)
+      .set({ xp: newXp })
+      .where(eq(imps.id, imp.id))
+      .run();
+    return newXp;
+  }
+
+  /** Batch fetch imps by twitch IDs */
+  getImpsByTwitchIds(twitchIds: string[]): Map<string, ImpRecord> {
+    const result = new Map<string, ImpRecord>();
+    for (const twitchId of twitchIds) {
+      const imp = this.getImpByTwitchId(twitchId);
+      if (imp) result.set(twitchId, imp);
+    }
+    return result;
+  }
+
+  /** Deposit gold and typed materials to the keep treasury */
+  depositToKeep(gold: number, materials: { wood: number; stone: number; bones: number }): void {
     const current = this.getKeepTreasury();
     this.db
       .update(keep)
       .set({
         gold: current.gold + gold,
-        materials: current.materials + materials,
+        wood: current.wood + materials.wood,
+        stone: current.stone + materials.stone,
+        bones: current.bones + materials.bones,
       })
       .where(eq(keep.id, 1))
       .run();
   }
 
-  /** Add gold to a player's imp by twitch ID */
-  addGoldToImp(twitchId: string, amount: number): void {
+  /** Add gold to a player's imp by twitch ID. Returns new total gold. */
+  addGoldToImp(twitchId: string, amount: number): number {
     const player = this.getPlayerByTwitchId(twitchId);
-    if (!player) return;
+    if (!player) return 0;
     const imp = this.getImpByPlayerId(player.id);
-    if (!imp) return;
+    if (!imp) return 0;
+    const newGold = imp.gold + amount;
     this.db
       .update(imps)
-      .set({ gold: imp.gold + amount })
+      .set({ gold: newGold })
       .where(eq(imps.id, imp.id))
+      .run();
+    return newGold;
+  }
+
+  // ─── Player Stats ─────────────────────────────────────────
+
+  /** Ensure a player_stats row exists for this player */
+  getOrCreateStats(playerId: number): void {
+    const existing = this.db
+      .select({ id: playerStats.id })
+      .from(playerStats)
+      .where(eq(playerStats.playerId, playerId))
+      .get();
+    if (!existing) {
+      this.db.insert(playerStats).values({ playerId }).run();
+    }
+  }
+
+  /** Increment numeric stat fields for a player */
+  incrementStats(
+    twitchId: string,
+    deltas: Partial<{
+      totalKills: number;
+      totalAdventures: number;
+      totalDamageDealt: number;
+      totalGoldEarned: number;
+      totalHealingDone: number;
+      successfulAdventures: number;
+      totalDeaths: number;
+      totalDamageTaken: number;
+      totalAssists: number;
+      combatsParticipated: number;
+      totalCrits: number;
+    }>
+  ): void {
+    const player = this.getPlayerByTwitchId(twitchId);
+    if (!player) return;
+    this.getOrCreateStats(player.id);
+
+    // Build Drizzle update object using sql`col + N` for atomic increment
+    const updates: Record<string, ReturnType<typeof sql>> = {};
+    const colMap: Record<string, keyof typeof playerStats.$inferSelect> = {
+      totalKills: "totalKills",
+      totalAdventures: "totalAdventures",
+      totalDamageDealt: "totalDamageDealt",
+      totalGoldEarned: "totalGoldEarned",
+      totalHealingDone: "totalHealingDone",
+      successfulAdventures: "successfulAdventures",
+      totalDeaths: "totalDeaths",
+      totalDamageTaken: "totalDamageTaken",
+      totalAssists: "totalAssists",
+      combatsParticipated: "combatsParticipated",
+      totalCrits: "totalCrits",
+    };
+
+    for (const [key, val] of Object.entries(deltas)) {
+      if (val && val > 0 && key in colMap) {
+        const colName = key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+        updates[colMap[key as keyof typeof colMap]] = sql`${sql.raw(colName)} + ${val}`;
+      }
+    }
+    if (Object.keys(updates).length === 0) return;
+
+    this.db
+      .update(playerStats)
+      .set(updates as any)
+      .where(eq(playerStats.playerId, player.id))
+      .run();
+  }
+
+  /** Update highest single-hit damage if the new value is higher */
+  updateHighestDamage(twitchId: string, damage: number): void {
+    const player = this.getPlayerByTwitchId(twitchId);
+    if (!player) return;
+    this.getOrCreateStats(player.id);
+
+    this.db
+      .update(playerStats)
+      .set({
+        highestDamageSingleHit: sql`MAX(highest_damage_single_hit, ${damage})`,
+      } as any)
+      .where(eq(playerStats.playerId, player.id))
+      .run();
+  }
+
+  /** Add damage to the per-weapon breakdown JSON */
+  addDamageByWeapon(twitchId: string, weaponId: string, damage: number): void {
+    const player = this.getPlayerByTwitchId(twitchId);
+    if (!player) return;
+    this.getOrCreateStats(player.id);
+
+    const row = this.db
+      .select({ data: playerStats.totalDamageByWeapon })
+      .from(playerStats)
+      .where(eq(playerStats.playerId, player.id))
+      .get();
+
+    const raw = row?.data;
+    const weaponDamage: Record<string, number> = typeof raw === "string" ? JSON.parse(raw) : (raw as Record<string, number>) ?? {};
+    weaponDamage[weaponId] = (weaponDamage[weaponId] ?? 0) + damage;
+
+    this.db
+      .update(playerStats)
+      .set({ totalDamageByWeapon: weaponDamage as any })
+      .where(eq(playerStats.playerId, player.id))
+      .run();
+  }
+
+  /** Add kills to the per-enemy-type breakdown JSON */
+  addKillsByEnemyType(twitchId: string, enemyId: string, count: number): void {
+    const player = this.getPlayerByTwitchId(twitchId);
+    if (!player) return;
+    this.getOrCreateStats(player.id);
+
+    const row = this.db
+      .select({ data: playerStats.enemiesKilledByType })
+      .from(playerStats)
+      .where(eq(playerStats.playerId, player.id))
+      .get();
+
+    const raw = row?.data;
+    const killsByType: Record<string, number> = typeof raw === "string" ? JSON.parse(raw) : (raw as Record<string, number>) ?? {};
+    killsByType[enemyId] = (killsByType[enemyId] ?? 0) + count;
+
+    this.db
+      .update(playerStats)
+      .set({ enemiesKilledByType: killsByType as any })
+      .where(eq(playerStats.playerId, player.id))
       .run();
   }
 }

@@ -1,5 +1,5 @@
 import type { GameState, VoteOption, AdventureSummary } from "./game.js";
-import type { CombatAction, CombatUnitInfo, GridSize, LootDrop } from "./combat.js";
+import type { CombatAction, CombatUnitInfo, GridPosition, GridSize, LootDrop } from "./combat.js";
 import type { EventInfo, EventChoice, EventOutcome } from "./events.js";
 import type { ImpAppearance, WeaponId } from "./player.js";
 
@@ -18,9 +18,16 @@ export interface ServerToClientEvents {
   "vote:result": (data: { winnerId: string; winnerName: string }) => void;
 
   // Combat
-  "combat:start": (data: { gridSize: GridSize; units: CombatUnitInfo[] }) => void;
-  "combat:actions": (data: { actions: CombatAction[] }) => void;
-  "combat:result": (data: { outcome: string; loot: LootDrop }) => void;
+  "combat:start": (data: { gridSize: GridSize; units: CombatUnitInfo[]; activeCount: number; obstacles: GridPosition[] }) => void;
+  "combat:actions": (data: { actions: CombatAction[]; outcome: string; loot: LootDrop }) => void;
+  "combat:result": (data: { outcome: string; loot: LootDrop }) => void; // kept for backwards compat
+
+  // Queue & HP tracking
+  "game:queue_update": (data: {
+    queue: Record<string, number | "combat" | "dead">;
+    impHp: Record<string, number>;
+    impDetails: Record<string, { name: string; level: number; weapon: string }>;
+  }) => void;
 
   // Events
   "event:presented": (data: { event: EventInfo; choices: EventChoice[] }) => void;
@@ -35,7 +42,7 @@ export interface ServerToClientEvents {
   "player:skill_unlocked": (data: { skillId: string }) => void;
 
   // Keep
-  "keep:updated": (data: { gold: number; materials: number }) => void;
+  "keep:updated": (data: { gold: number; wood: number; stone: number; bones: number }) => void;
   "keep:upgrade_completed": (data: { upgradeId: string; type: string; level: number }) => void;
   "keep:treasure_earned": (data: { treasureId: string; type: string; name: string }) => void;
 
