@@ -35,13 +35,20 @@ export interface AdventureState {
   currentAreaId: string;
   currentStep: number; // 1-5 within an area
   totalAreasCompleted: number;
+  tier: number; // 1-3, escalates when continuing after boss
   survivingImpCount: number;
   lootPool: LootPool;
 }
 
+export interface Materials {
+  wood: number;
+  stone: number;
+  bones: number;
+}
+
 export interface LootPool {
   gold: number;
-  materials: number;
+  materials: Materials;
   specialItems: string[];
 }
 
@@ -63,5 +70,5 @@ export interface AdventureSummary {
   totalSteps: number;
   participantCount: number;
   goldCollected: number;
-  materialsCollected: number;
+  materialsCollected: Materials;
 }

@@ -1,6 +1,8 @@
 export interface KeepState {
   gold: number;
-  materials: number;
+  wood: number;
+  stone: number;
+  bones: number;
 }
 
 export type UpgradeType = "walls" | "armory" | "ballista" | "barracks" | "treasury";

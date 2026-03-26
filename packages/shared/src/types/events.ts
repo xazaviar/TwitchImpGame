@@ -17,7 +17,9 @@ export interface EventOutcome {
   success: boolean;
   rewards?: {
     gold?: number;
-    materials?: number;
+    wood?: number;
+    stone?: number;
+    bones?: number;
     healAll?: number;
   };
   penalties?: {

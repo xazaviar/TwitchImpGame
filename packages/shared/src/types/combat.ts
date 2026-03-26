@@ -21,6 +21,8 @@ export interface CombatUnit {
   attack: number;
   defense: number;
   speed: number;
+  luck: number;
+  fervor: number;
   position: GridPosition;
 }
 
@@ -32,6 +34,7 @@ export interface CombatUnitInfo {
   enemyId?: string;
   hp: number;
   maxHp: number;
+  fervor: number; // fervor gain rate per turn
   position: GridPosition;
 }
 
@@ -54,13 +57,17 @@ export interface CombatAction {
   damage?: number;
   healing?: number;
   newHp?: number;
+  isCrit?: boolean; // true if this attack was a critical hit
+  actorFervor?: number; // actor's current fervor after this action
   replacementId?: string;
   replacementName?: string;
 }
 
+import type { Materials } from "./game.js";
+
 export interface LootDrop {
   gold: number;
-  materials: number;
+  materials: Materials;
   specialItems: string[];
 }
 
@@ -68,9 +75,15 @@ export interface CombatResult {
   actions: CombatAction[];
   gridSize: GridSize;
   initialPositions: Record<string, GridPosition>;
-  totalTurns: number;
+  initialUnits: CombatUnitInfo[];
+  totalRounds: number;
   outcome: "victory" | "defeat";
   loot: LootDrop;
   xpAwarded: Record<string, number>;
   ejectedImpIds: string[];
+  killCredit: Record<string, string[]>;
+  assists: Record<string, number>;
+  heals: Record<string, number>;
+  participants: string[];
+  survivingImpIds: string[];
 }

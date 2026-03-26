@@ -106,8 +106,42 @@ app.get("/api/game/state", (_req, res) => {
   res.json({
     ...engine.getExtendedState(),
     keepGold: treasury.gold,
-    keepMaterials: treasury.materials,
+    keepWood: treasury.wood,
+    keepStone: treasury.stone,
+    keepBones: treasury.bones,
   });
+});
+
+// All imps for admin view
+app.get("/api/admin/imps", (_req, res) => {
+  const allImps = playerService.getAllImpsWithTwitchId();
+  const adventureParticipants = engine.getAdventureParticipantIds();
+  const tempImpCount = engine.getTempImpCount();
+
+  const keepImps = allImps
+    .filter((imp) => !adventureParticipants.has(imp.twitchId))
+    .map((imp) => ({
+      id: imp.twitchId,
+      name: imp.name,
+      level: imp.level,
+      weapon: imp.weapon,
+      isTemp: false,
+    }));
+
+  // Add temp imps at keep (those not on adventure)
+  const adventureTempCount = engine.getAdventureTempCount();
+  const atKeepTempCount = tempImpCount - adventureTempCount;
+  for (let i = 0; i < atKeepTempCount; i++) {
+    keepImps.push({
+      id: `keep_temp_${i}`,
+      name: `Temp Imp`,
+      level: 1,
+      weapon: "?",
+      isTemp: true,
+    });
+  }
+
+  res.json({ keepImps });
 });
 
 // Player imp data (authenticated)
@@ -210,6 +244,11 @@ io.on("connection", (socket) => {
   console.log(`Client connected: ${socket.id} — ${identity}`);
 
   socket.join("game");
+
+  // Join per-player room for targeted notifications
+  if (data.twitchId) {
+    socket.join(`player:${data.twitchId}`);
+  }
 
   // Send current game state
   socket.emit("game:phase_changed", engine.getGameState());

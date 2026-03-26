@@ -32,7 +32,9 @@ export const imps = sqliteTable("imps", {
   maxHp: integer("max_hp").notNull().default(20),
   attack: integer("attack").notNull().default(5),
   defense: integer("defense").notNull().default(3),
-  speed: integer("speed").notNull().default(5),
+  speed: integer("speed").notNull().default(3),
+  luck: integer("luck").notNull().default(1),
+  fervor: integer("fervor").notNull().default(3),
   skillPoints: integer("skill_points").notNull().default(0),
   gold: integer("gold").notNull().default(0),
 });
@@ -75,7 +77,9 @@ export const cosmeticItems = sqliteTable("cosmetic_items", {
 export const keep = sqliteTable("keep", {
   id: integer("id").primaryKey(),
   gold: integer("gold").notNull().default(0),
-  materials: integer("materials").notNull().default(0),
+  wood: integer("wood").notNull().default(0),
+  stone: integer("stone").notNull().default(0),
+  bones: integer("bones").notNull().default(0),
 });
 
 export const keepUpgrades = sqliteTable("keep_upgrades", {
@@ -129,6 +133,29 @@ export const adventureParticipants = sqliteTable("adventure_participants", {
   xpEarned: integer("xp_earned").notNull().default(0),
   goldEarned: integer("gold_earned").notNull().default(0),
   ejectedAtStep: integer("ejected_at_step"),
+});
+
+// ─── Player Stats (lifetime tracking) ─────────────────
+
+export const playerStats = sqliteTable("player_stats", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  playerId: integer("player_id")
+    .notNull()
+    .references(() => players.id),
+  totalKills: integer("total_kills").notNull().default(0),
+  totalAdventures: integer("total_adventures").notNull().default(0),
+  totalDamageDealt: integer("total_damage_dealt").notNull().default(0),
+  totalDamageByWeapon: text("total_damage_by_weapon", { mode: "json" }).notNull().default("{}"),
+  totalGoldEarned: integer("total_gold_earned").notNull().default(0),
+  totalHealingDone: integer("total_healing_done").notNull().default(0),
+  successfulAdventures: integer("successful_adventures").notNull().default(0),
+  totalDeaths: integer("total_deaths").notNull().default(0),
+  totalDamageTaken: integer("total_damage_taken").notNull().default(0),
+  totalAssists: integer("total_assists").notNull().default(0),
+  combatsParticipated: integer("combats_participated").notNull().default(0),
+  highestDamageSingleHit: integer("highest_damage_single_hit").notNull().default(0),
+  totalCrits: integer("total_crits").notNull().default(0),
+  enemiesKilledByType: text("enemies_killed_by_type", { mode: "json" }).notNull().default("{}"),
 });
 
 // ─── Combat Logs ─────────────────────────────────────

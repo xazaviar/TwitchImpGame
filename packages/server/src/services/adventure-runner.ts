@@ -1,17 +1,19 @@
 import type {
   AdventureState,
-  CombatUnitInfo,
-  GridSize,
   LootDrop,
   EventDefinition,
   EventOutcome,
   AreaDefinition,
+  CombatEncounterDef,
+  EnemyDefinition,
   WeaponId,
 } from "@imp/shared";
-import { REWARD_TIER_MULTIPLIER } from "@imp/shared";
+import { TIER_REWARD_MULTIPLIERS, getTier } from "@imp/shared";
+import { getEncounter } from "../content/encounters.js";
+import { getEnemyDef } from "../content/enemies.js";
 
-/** Placeholder area definitions for Phase 2 testing */
-const PLACEHOLDER_AREAS: AreaDefinition[] = [
+/** Area definitions */
+const AREAS: AreaDefinition[] = [
   {
     id: "goblin_woods",
     name: "Goblin Woods",
@@ -25,7 +27,11 @@ const PLACEHOLDER_AREAS: AreaDefinition[] = [
     areaSpecificEvents: [],
     lootTable: {
       goldRange: { min: 10, max: 30 },
-      materialsRange: { min: 2, max: 5 },
+      materialsRange: {
+        wood: { min: 2, max: 5 },
+        stone: { min: 0, max: 2 },
+        bones: { min: 0, max: 1 },
+      },
       bossGoldMultiplier: 3,
       specialItems: [],
     },
@@ -51,7 +57,11 @@ const PLACEHOLDER_AREAS: AreaDefinition[] = [
     areaSpecificEvents: [],
     lootTable: {
       goldRange: { min: 20, max: 50 },
-      materialsRange: { min: 5, max: 10 },
+      materialsRange: {
+        wood: { min: 0, max: 2 },
+        stone: { min: 4, max: 8 },
+        bones: { min: 0, max: 1 },
+      },
       bossGoldMultiplier: 3,
       specialItems: [],
     },
@@ -77,7 +87,11 @@ const PLACEHOLDER_AREAS: AreaDefinition[] = [
     areaSpecificEvents: [],
     lootTable: {
       goldRange: { min: 30, max: 80 },
-      materialsRange: { min: 8, max: 15 },
+      materialsRange: {
+        wood: { min: 0, max: 2 },
+        stone: { min: 2, max: 5 },
+        bones: { min: 1, max: 3 },
+      },
       bossGoldMultiplier: 4,
       specialItems: [],
     },
@@ -92,8 +106,8 @@ const PLACEHOLDER_AREAS: AreaDefinition[] = [
   },
 ];
 
-/** Placeholder event definitions */
-const PLACEHOLDER_EVENTS: EventDefinition[] = [
+/** Event definitions */
+const EVENTS: EventDefinition[] = [
   {
     id: "mysterious_chest",
     name: "Mysterious Chest",
@@ -142,7 +156,7 @@ const PLACEHOLDER_EVENTS: EventDefinition[] = [
           successChance: 0.8,
           success: {
             narrative: "Grateful, the traveler shares supplies and information!",
-            rewards: { gold: 15, materials: 3 },
+            rewards: { gold: 15, wood: 2, stone: 1 },
           },
           failure: {
             narrative: "It was an ambush! The 'traveler' attacks!",
@@ -207,7 +221,7 @@ const PLACEHOLDER_EVENTS: EventDefinition[] = [
           successChance: 0.4,
           success: {
             narrative: "Building materials everywhere!",
-            rewards: { materials: 8 },
+            rewards: { stone: 6, bones: 2 },
           },
           failure: {
             narrative: "The fountain explodes! The horde takes a beating!",
@@ -220,12 +234,11 @@ const PLACEHOLDER_EVENTS: EventDefinition[] = [
 ];
 
 export class AdventureRunner {
-  private areas: AreaDefinition[] = PLACEHOLDER_AREAS;
-  private events: EventDefinition[] = PLACEHOLDER_EVENTS;
+  private areas: AreaDefinition[] = AREAS;
+  private events: EventDefinition[] = EVENTS;
 
   /** Get available areas for voting */
   getAvailableAreas(): AreaDefinition[] {
-    // Shuffle and pick 3 (or fewer if less available)
     const shuffled = [...this.areas].sort(() => Math.random() - 0.5);
     return shuffled.slice(0, 3);
   }
@@ -238,6 +251,55 @@ export class AdventureRunner {
   /** Get a random event for an event step */
   getRandomEvent(): EventDefinition {
     return this.events[Math.floor(Math.random() * this.events.length)];
+  }
+
+  /** Get encounter for an area (delegates to content/encounters.ts) */
+  getEncounter(areaId: string, isBoss: boolean): CombatEncounterDef | undefined {
+    return getEncounter(areaId, isBoss);
+  }
+
+  /** Get enemy definition (delegates to content/enemies.ts) */
+  getEnemyDef(enemyId: string): EnemyDefinition | undefined {
+    return getEnemyDef(enemyId);
+  }
+
+  /** Calculate loot from area's loot table */
+  calculateLoot(
+    areaId: string,
+    isBoss: boolean,
+    totalAreasCompleted: number
+  ): LootDrop {
+    const area = this.getArea(areaId);
+    const defaultRange = { min: 0, max: 2 };
+    const lootTable = area?.lootTable ?? {
+      goldRange: { min: 10, max: 30 },
+      materialsRange: { wood: defaultRange, stone: defaultRange, bones: defaultRange },
+      bossGoldMultiplier: 3,
+      specialItems: [],
+    };
+
+    const tier = getTier(totalAreasCompleted);
+    const tierMultiplier = TIER_REWARD_MULTIPLIERS[tier - 1] ?? 1;
+
+    const goldBase =
+      Math.floor(
+        Math.random() * (lootTable.goldRange.max - lootTable.goldRange.min + 1)
+      ) + lootTable.goldRange.min;
+
+    const rollRange = (r: { min: number; max: number }) =>
+      Math.floor(Math.random() * (r.max - r.min + 1)) + r.min;
+
+    const goldMultiplier = isBoss ? lootTable.bossGoldMultiplier : 1;
+
+    return {
+      gold: Math.floor(goldBase * goldMultiplier * tierMultiplier),
+      materials: {
+        wood: Math.floor(rollRange(lootTable.materialsRange.wood) * tierMultiplier),
+        stone: Math.floor(rollRange(lootTable.materialsRange.stone) * tierMultiplier),
+        bones: Math.floor(rollRange(lootTable.materialsRange.bones) * tierMultiplier),
+      },
+      specialItems: [],
+    };
   }
 
   /** Resolve an event choice outcome */
@@ -281,105 +343,5 @@ export class AdventureRunner {
         penalties: outcomeDef.failure?.penalties,
       };
     }
-  }
-
-  /** Simulate placeholder combat — returns simplified results */
-  simulatePlaceholderCombat(
-    adventure: AdventureState,
-    isBoss: boolean
-  ): {
-    gridSize: GridSize;
-    initialPositions: CombatUnitInfo[];
-    outcome: "victory" | "defeat";
-    loot: LootDrop;
-    survivingImps: number;
-  } {
-    const area = this.getArea(adventure.currentAreaId);
-    const lootTable = area?.lootTable ?? {
-      goldRange: { min: 10, max: 30 },
-      materialsRange: { min: 1, max: 5 },
-      bossGoldMultiplier: 3,
-      specialItems: [],
-    };
-
-    const gridSize: GridSize = { width: 6, height: 6 };
-    const tierMultiplier = Math.pow(
-      REWARD_TIER_MULTIPLIER,
-      adventure.totalAreasCompleted
-    );
-
-    // Generate placeholder imp units
-    const impCount = Math.min(adventure.survivingImpCount, 5);
-    const units: CombatUnitInfo[] = [];
-
-    for (let i = 0; i < impCount; i++) {
-      units.push({
-        id: `imp_${i}`,
-        name: `Imp ${i + 1}`,
-        isImp: true,
-        weapon: ["sword", "bow", "staff", "cross", "shield"][i % 5],
-        hp: 20,
-        maxHp: 20,
-        position: { x: 0, y: i },
-      });
-    }
-
-    // Generate placeholder enemies
-    const enemyCount = isBoss ? 1 : Math.floor(Math.random() * 3) + 2;
-    for (let i = 0; i < enemyCount; i++) {
-      units.push({
-        id: `enemy_${i}`,
-        name: isBoss ? "Boss" : `Goblin ${i + 1}`,
-        isImp: false,
-        enemyId: isBoss ? "boss" : "goblin",
-        hp: isBoss ? 50 : 15,
-        maxHp: isBoss ? 50 : 15,
-        position: { x: 5, y: i + 1 },
-      });
-    }
-
-    // Placeholder outcome: boss = auto-win (for testing), regular = 90%
-    const victoryChance = isBoss ? 1.0 : 0.9;
-    const outcome: "victory" | "defeat" =
-      Math.random() < victoryChance ? "victory" : "defeat";
-
-    // Calculate loot
-    const goldBase =
-      Math.floor(
-        Math.random() * (lootTable.goldRange.max - lootTable.goldRange.min + 1)
-      ) + lootTable.goldRange.min;
-    const materialsBase =
-      Math.floor(
-        Math.random() *
-          (lootTable.materialsRange.max - lootTable.materialsRange.min + 1)
-      ) + lootTable.materialsRange.min;
-
-    const goldMultiplier = isBoss ? lootTable.bossGoldMultiplier : 1;
-    const loot: LootDrop =
-      outcome === "victory"
-        ? {
-            gold: Math.floor(goldBase * goldMultiplier * tierMultiplier),
-            materials: Math.floor(materialsBase * tierMultiplier),
-            specialItems: [],
-          }
-        : { gold: 0, materials: 0, specialItems: [] };
-
-    // Calculate surviving imps
-    let survivingImps = adventure.survivingImpCount;
-    if (outcome === "defeat") {
-      survivingImps = 0;
-    } else {
-      // Random attrition: 0-2 imps lost per combat
-      const losses = Math.floor(Math.random() * 2);
-      survivingImps = Math.max(0, survivingImps - losses);
-    }
-
-    return {
-      gridSize,
-      initialPositions: units,
-      outcome,
-      loot,
-      survivingImps,
-    };
   }
 }

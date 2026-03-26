@@ -49,10 +49,12 @@ function initializeTables(sqlite: Database.Database) {
       weapon TEXT NOT NULL DEFAULT 'sword',
       level INTEGER NOT NULL DEFAULT 1,
       xp INTEGER NOT NULL DEFAULT 0,
-      max_hp INTEGER NOT NULL DEFAULT 20,
-      attack INTEGER NOT NULL DEFAULT 5,
-      defense INTEGER NOT NULL DEFAULT 3,
-      speed INTEGER NOT NULL DEFAULT 5,
+      max_hp INTEGER NOT NULL DEFAULT 12,
+      attack INTEGER NOT NULL DEFAULT 3,
+      defense INTEGER NOT NULL DEFAULT 0,
+      speed INTEGER NOT NULL DEFAULT 3,
+      luck INTEGER NOT NULL DEFAULT 1,
+      fervor INTEGER NOT NULL DEFAULT 3,
       skill_points INTEGER NOT NULL DEFAULT 0,
       gold INTEGER NOT NULL DEFAULT 0
     );
@@ -80,7 +82,7 @@ function initializeTables(sqlite: Database.Database) {
       acquired_at INTEGER NOT NULL
     );
 
-    -- Keep
+    -- Keep (migration adds wood/stone/bones columns to existing tables)
     CREATE TABLE IF NOT EXISTS keep (
       id INTEGER PRIMARY KEY,
       gold INTEGER NOT NULL DEFAULT 0,
@@ -130,6 +132,26 @@ function initializeTables(sqlite: Database.Database) {
       ejected_at_step INTEGER
     );
 
+    -- Player Stats (lifetime tracking)
+    CREATE TABLE IF NOT EXISTS player_stats (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      player_id INTEGER NOT NULL UNIQUE REFERENCES players(id),
+      total_kills INTEGER NOT NULL DEFAULT 0,
+      total_adventures INTEGER NOT NULL DEFAULT 0,
+      total_damage_dealt INTEGER NOT NULL DEFAULT 0,
+      total_damage_by_weapon TEXT NOT NULL DEFAULT '{}',
+      total_gold_earned INTEGER NOT NULL DEFAULT 0,
+      total_healing_done INTEGER NOT NULL DEFAULT 0,
+      successful_adventures INTEGER NOT NULL DEFAULT 0,
+      total_deaths INTEGER NOT NULL DEFAULT 0,
+      total_damage_taken INTEGER NOT NULL DEFAULT 0,
+      total_assists INTEGER NOT NULL DEFAULT 0,
+      combats_participated INTEGER NOT NULL DEFAULT 0,
+      highest_damage_single_hit INTEGER NOT NULL DEFAULT 0,
+      total_crits INTEGER NOT NULL DEFAULT 0,
+      enemies_killed_by_type TEXT NOT NULL DEFAULT '{}'
+    );
+
     -- Combat Logs
     CREATE TABLE IF NOT EXISTS combat_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,6 +165,26 @@ function initializeTables(sqlite: Database.Database) {
       created_at INTEGER NOT NULL
     );
   `);
+
+  // Migration: convert old 'materials' column to typed materials (wood, stone, bones)
+  runMigrations(sqlite);
+}
+
+function runMigrations(sqlite: Database.Database) {
+  // Check if old 'materials' column exists on keep table
+  const keepColumns = sqlite.pragma("table_info(keep)") as { name: string }[];
+  const hasMaterials = keepColumns.some((c) => c.name === "materials");
+  const hasWood = keepColumns.some((c) => c.name === "wood");
+
+  if (hasMaterials && !hasWood) {
+    console.log("[DB Migration] Converting keep.materials → wood, stone, bones");
+    sqlite.exec(`
+      ALTER TABLE keep ADD COLUMN wood INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE keep ADD COLUMN stone INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE keep ADD COLUMN bones INTEGER NOT NULL DEFAULT 0;
+      UPDATE keep SET stone = materials WHERE wood = 0 AND stone = 0;
+    `);
+  }
 }
 
 export type DrizzleDB = ReturnType<typeof createDatabase>;
